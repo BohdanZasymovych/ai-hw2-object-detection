@@ -30,6 +30,7 @@ from torchvision.transforms import v2
 # --------------------------------------------------------------------------------------
 SEED = 42
 COMPETITION = "multiple-object-video-detection-hw-2-ucu-ai-2026"
+HF_REPO = "BohdanZasymovych/ai-hw2-object-detection"            # Hugging Face model repo for runs and checkpoints
 ON_KAGGLE = Path("/kaggle/working").exists()
 
 
@@ -321,11 +322,12 @@ def _save_atomic(obj, path):
 
 
 def fit(model, train_loader, optimizer, epochs, scheduler=None, eval_fn=None, amp=True, grad_clip=10.0,
-        ckpt_path=None, last_path=None, resume_from=None, logger=None, time_budget_s=None):
+        ckpt_path=None, last_path=None, resume_from=None, logger=None, time_budget_s=None, on_epoch_end=None):
     """Train a torchvision-style detector. eval_fn() -> metrics dict (with 'mAP') runs after every epoch.
     ckpt_path: best weights by val mAP (model only). last_path: full training state written after every epoch
     (model, optimizer, scheduler, AMP scaler, RNG states, history); resume_from: such a file, training continues
     with the next epoch (build the model, optimizer and scheduler exactly as in the first run).
+    on_epoch_end(epoch, row) is called after each epoch (after the checkpoints are written), e.g. to push them to the Hub.
     Returns history: one dict per epoch with mean losses, validation metrics and elapsed time."""
     model.to(DEVICE)
     use_amp = amp and DEVICE.type == "cuda"
@@ -388,6 +390,8 @@ def fit(model, train_loader, optimizer, epochs, scheduler=None, eval_fn=None, am
                 loader_rng=train_loader.generator.get_state() if train_loader.generator is not None else None), last_path)
         if logger:
             logger.log(row, step=ep)
+        if on_epoch_end:
+            on_epoch_end(ep, row)
         if time_budget_s and row["time_s"] > time_budget_s:
             break
     return history
@@ -466,6 +470,52 @@ def load_results(runs_dir=RUNS_DIR):
 
 
 # --------------------------------------------------------------------------------------
+# Hugging Face Hub: move runs between Kaggle and the laptop
+# --------------------------------------------------------------------------------------
+def hf_token():
+    """Token from the HF_TOKEN env var or the Kaggle secret named HF_TOKEN; None falls back to a cached `hf auth login`."""
+    import os
+    if os.environ.get("HF_TOKEN"):
+        return os.environ["HF_TOKEN"]
+    if ON_KAGGLE:
+        try:
+            from kaggle_secrets import UserSecretsClient
+            return UserSecretsClient().get_secret("HF_TOKEN")
+        except Exception:
+            return None
+    return None
+
+
+def push_run(name, repo_id=HF_REPO, private=False, weights=True, last=False):
+    """Upload runs/<name>/ to the model repo `repo_id` (default HF_REPO, created if missing) under runs/<name>/.
+    weights=False skips best.pt; last=True also uploads last.pt (the full state, needed to resume elsewhere)."""
+    from huggingface_hub import HfApi
+    api = HfApi(token=hf_token())
+    api.create_repo(repo_id, private=private, exist_ok=True)
+    ignore = ([] if weights else ["best.pt"]) + ([] if last else ["last.pt"]) + ["*.tmp"]
+    api.upload_folder(folder_path=str(run_dir(name)), path_in_repo=f"runs/{name}", repo_id=repo_id,
+                      ignore_patterns=ignore, commit_message=f"run {name}")
+    print(f"Uploaded runs/{name} -> https://huggingface.co/{repo_id}/tree/main/runs/{name}")
+
+
+def pull_run(name, repo_id=HF_REPO, weights=True, last=False):
+    """Download runs/<name>/ from the Hub into the local runs/ folder (metrics and predictions always; weights optional)."""
+    from huggingface_hub import snapshot_download
+    ignore = ([] if weights else ["*/best.pt"]) + ([] if last else ["*/last.pt"])
+    snapshot_download(repo_id, allow_patterns=[f"runs/{name}/*"], ignore_patterns=ignore,
+                      local_dir=str(OUT_DIR), token=hf_token())
+    return RUNS_DIR / name
+
+
+def push_file(path, repo_id=HF_REPO, path_in_repo=None, private=False):
+    """Upload a single file (e.g. last.pt every few epochs from `fit(on_epoch_end=...)`)."""
+    from huggingface_hub import HfApi
+    api = HfApi(token=hf_token())
+    api.create_repo(repo_id, private=private, exist_ok=True)
+    api.upload_file(path_or_fileobj=str(path), path_in_repo=path_in_repo or Path(path).name, repo_id=repo_id)
+
+
+# --------------------------------------------------------------------------------------
 # Visualization
 # --------------------------------------------------------------------------------------
 def draw_frame(split, image_id, ax, preds=None, score_thr=0.3):
@@ -493,6 +543,7 @@ __all__ = [
     "SEED",
     "ROOT",
     "COMPETITION",
+    "HF_REPO",
     "ON_KAGGLE",
     "DATA_DIR",
     "RAW_DIR",
@@ -525,5 +576,9 @@ __all__ = [
     "run_dir",
     "save_run",
     "load_results",
+    "hf_token",
+    "push_run",
+    "pull_run",
+    "push_file",
     "draw_frame",
 ]
