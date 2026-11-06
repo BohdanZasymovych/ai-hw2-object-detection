@@ -495,7 +495,9 @@ def hf_token():
         try:
             from kaggle_secrets import UserSecretsClient
             return UserSecretsClient().get_secret("HF_TOKEN")
-        except Exception:
+        except Exception as e:
+            print(f"Kaggle secret HF_TOKEN is not readable ({type(e).__name__}: {e}). Add it in Add-ons -> Secrets "
+                  "and tick its checkbox to attach it to this notebook.")
             return None
     return None
 
