@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Datasets (VisDrone) and converted annotations
+data/
+datasets/
+VisDrone*/
+*.zip
+*.tar
+*.tar.gz
+
+# Training outputs and model weights
+runs/
+outputs/
+checkpoints/
+wandb/
+lightning_logs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+
+# Submissions / predictions
+submission*.csv
+predictions/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# AI-context
+ai-context/
