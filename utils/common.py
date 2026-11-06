@@ -521,6 +521,22 @@ def pull_run(name, repo_id=HF_REPO, weights=True, last=False):
     return RUNS_DIR / name
 
 
+def check_hf_write(repo_id=HF_REPO):
+    """Fail early (before any training) if results cannot be uploaded to `repo_id`.
+    Real write test: uploads a constant marker file; the Hub skips identical re-uploads, so repeated checks add no commits."""
+    from huggingface_hub import HfApi
+    api = HfApi(token=hf_token())
+    try:
+        user = api.whoami()["name"]
+        api.create_repo(repo_id, exist_ok=True)
+        api.upload_file(path_or_fileobj=b"write access check\n", path_in_repo=".write_check", repo_id=repo_id,
+                        commit_message="write access check")
+    except Exception as e:
+        raise RuntimeError(f"No write access to the Hugging Face repo {repo_id} ({type(e).__name__}: {e}). "
+                           "Set HF_TOKEN to a write token (Kaggle: Add-ons -> Secrets; locally: `hf auth login`).") from e
+    print(f"Hugging Face write access OK: {user} -> {repo_id}")
+
+
 def push_file(path, repo_id=HF_REPO, path_in_repo=None, private=False):
     """Upload a single file (e.g. last.pt every few epochs from `fit(on_epoch_end=...)`)."""
     from huggingface_hub import HfApi
@@ -594,5 +610,6 @@ __all__ = [
     "push_run",
     "pull_run",
     "push_file",
+    "check_hf_write",
     "draw_frame",
 ]
