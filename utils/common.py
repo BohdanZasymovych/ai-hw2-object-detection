@@ -19,11 +19,25 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torchvision
 from PIL import Image, ImageDraw
 from tqdm import tqdm
-from pycocotools.cocoeval import COCOeval
-from torchvision import tv_tensors
-from torchvision.transforms import v2
+
+
+def _check_versions(min_torch=(2, 3), min_torchvision=(0, 18)):
+    """Fail early with a clear message if the installed torch/torchvision is older than the code needs."""
+    ver = lambda v: tuple(int(x) for x in v.split("+")[0].split(".")[:2])
+    for lib, minimum in [(torch, min_torch), (torchvision, min_torchvision)]:
+        if ver(lib.__version__) < minimum:
+            raise ImportError(f"{lib.__name__} {lib.__version__} is too old, need >= {'.'.join(map(str, minimum))} "
+                              f"(pip install -r requirements.txt)")
+
+
+_check_versions()
+
+from pycocotools.cocoeval import COCOeval          # noqa: E402  (imported after the version check)
+from torchvision import tv_tensors                 # noqa: E402
+from torchvision.transforms import v2              # noqa: E402
 
 # --------------------------------------------------------------------------------------
 # Config and paths

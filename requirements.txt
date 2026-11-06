@@ -1,0 +1,18 @@
+# Local setup: python -m venv .venv && .venv/bin/pip install -r requirements.txt
+# Kaggle: torch/torchvision and most of the stack are preinstalled; the notebooks only install what is missing.
+# Minimums are what the code needs; the tested local versions (Python 3.14.4) are given in the comments.
+
+torch>=2.3            # tested 2.15.0 (CUDA 13.2 build); torch.amp.GradScaler
+torchvision>=0.18     # tested 0.29.2; transforms.v2 + tv_tensors (box-aware augmentation)
+pycocotools>=2.0.6    # tested 2.0.11; COCO evaluation
+huggingface_hub>=0.20 # tested 2.4.0; push/pull of runs
+numpy>=1.24           # tested 2.5.4
+pandas>=2.0           # tested 3.1.1
+matplotlib>=3.7       # tested 3.11.2
+pillow>=10.0          # tested 13.0.0
+tqdm>=4.65            # tested 4.70.1
+
+# Notebooks and data download (local)
+ipykernel>=6.0        # tested 7.4.0
+nbconvert>=7.0        # tested 7.17.2
+kaggle>=1.6           # tested 2.2.5; competition download and Kaggle outputs
