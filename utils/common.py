@@ -99,7 +99,7 @@ PREP = dict(
     frame_step=3,                # keep every 3rd frame of each sequence (train and val)
     long_side=1280,              # resize the long side, keep aspect ratio
     train_aug=dict(hflip=0.5, scale_jitter=(0.75, 1.25), color_jitter=0.2),   # box-aware, train only
-    mask_ignore=False,           # paint ignore regions grey in the image so unlabeled objects are not learned as background
+    mask_ignore=False,           # paint ignore regions grey in the image (off by default)
     min_box_px=2,                # drop boxes smaller than this after augmentation
     seed=SEED,
 )
@@ -109,7 +109,7 @@ EVAL_DETS = 300                  # max detections per image kept for evaluation 
 @functools.lru_cache(maxsize=None)
 def load_split(split):
     """Return (frames, boxes, ignore) DataFrames of a split, in native pixels with xywh boxes. Treat as read-only.
-    boxes: iscrowd=0 targets; ignore: ignored regions / 'others' (iscrowd=1, deduplicated over classes)."""
+    boxes: iscrowd=0 targets; ignore: ignore regions (iscrowd=1, orig_category_id 0 or 11), deduplicated over the per-class copies."""
     d = json.load(open(RAW_DIR / split / "annotations_coco.json"))
     frames = pd.DataFrame(d["images"]).rename(columns={"id": "image_id", "video": "seq"})
     anns = pd.DataFrame(d["annotations"])
