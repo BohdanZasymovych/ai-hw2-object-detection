@@ -573,6 +573,133 @@ def draw_frame(split, image_id, ax, preds=None, score_thr=0.3, show_gt=True, col
     ax.imshow(im); ax.axis("off"); ax.set_title(f"{row.seq} #{row.frame_id}", fontsize=9)
 
 
+# --------------------------------------------------------------------------------------
+# Anchor fit and error analysis (shared by the detector notebooks)
+# --------------------------------------------------------------------------------------
+@functools.lru_cache(maxsize=None)
+def _train_wh(long_side=PREP["long_side"], n=100_000):
+    """(w, h) of a random sample of train boxes at the input resolution, and a mask of the COCO-small ones."""
+    _, bx, _ = load_split("train")
+    wh = bx[["w", "h"]].to_numpy() * (long_side / bx[["width", "height"]].max(axis=1).to_numpy())[:, None]
+    idx = np.random.default_rng(SEED).choice(len(wh), n, replace=False)
+    return wh[idx], (bx["size"].to_numpy() < 32)[idx]
+
+
+def anchor_fit(sizes, ratios=(0.5, 1.0, 2.0), long_side=PREP["long_side"]):
+    """How well a set of anchor shapes fits the train boxes: best IoU of each box with any anchor shape (position ignored).
+    sizes: anchor sizes in input pixels, flat or one tuple per level."""
+    sizes = [s for lvl in sizes for s in (lvl if isinstance(lvl, (tuple, list)) else (lvl,))]
+    wh, small = _train_wh(long_side)
+    a = np.array([(s / np.sqrt(r), s * np.sqrt(r)) for s in sizes for r in ratios])        # (w, h), r = h / w
+    inter = np.minimum(wh[:, None, 0], a[None, :, 0]) * np.minimum(wh[:, None, 1], a[None, :, 1])
+    best = (inter / (wh[:, 0:1] * wh[:, 1:2] + a[:, 0] * a[:, 1] - inter)).max(1)
+    return {"median best IoU": np.median(best), "% IoU>=0.5": (best >= .5).mean() * 100, "% IoU>=0.7": (best >= .7).mean() * 100,
+            "% IoU>=0.7 (small)": (best[small] >= .7).mean() * 100}
+
+
+def match_errors(preds, image_ids, split="val", score_thr=0.3, iou_thr=0.5):
+    """Error types at a fixed score threshold -> (gt, det) DataFrames.
+    GT boxes: correct | crowded (overlapped only by a same-class box already matched to a neighbour) |
+              wrong_class (overlapped only by another class) | mislocalized (best IoU 0.1-0.5) | missed.
+    Detections: tp | duplicate | wrong_class | ignored (centre in an ignore region) | background."""
+    from torchvision.ops import box_iou
+    _, boxes, ignore = load_split(split)
+    P = pd.DataFrame(preds)
+    P = P[P.score >= score_thr]
+    bg, ig, pg = boxes.groupby("image_id"), ignore.groupby("image_id"), P.groupby("image_id")
+    xyxy = lambda a: torch.tensor(np.c_[a[:, 0], a[:, 1], a[:, 0] + a[:, 2], a[:, 1] + a[:, 3]], dtype=torch.float32)
+    gts, dets = [], []
+    for i in image_ids:
+        g = bg.get_group(i) if i in bg.groups else boxes.iloc[:0]
+        p = pg.get_group(i).sort_values("score", ascending=False) if i in pg.groups else P.iloc[:0]
+        G = xyxy(g[["x", "y", "w", "h"]].to_numpy(np.float32))
+        D = xyxy(np.array(p.bbox.tolist(), np.float32).reshape(-1, 4))
+        iou = box_iou(G, D) if len(G) and len(D) else torch.zeros(len(G), len(D))
+        gc, dc = g.category_id.to_numpy(), p.category_id.to_numpy()
+        matched, dtype = np.zeros(len(G), bool), []
+        for k in range(len(D)):
+            ov = (iou[:, k] >= iou_thr).numpy()
+            same = ov & (gc == dc[k])
+            if (same & ~matched).any():
+                matched[np.argmax(iou[:, k].numpy() * (same & ~matched))] = True
+                dtype.append("tp")
+            elif same.any():
+                dtype.append("duplicate")
+            elif ov.any():
+                dtype.append("wrong_class")
+            else:
+                cx, cy = float(D[k, 0] + D[k, 2]) / 2, float(D[k, 1] + D[k, 3]) / 2
+                r = ig.get_group(i) if i in ig.groups else ignore.iloc[:0]
+                inside = ((r.x <= cx) & (cx <= r.x + r.w) & (r.y <= cy) & (cy <= r.y + r.h)).any()
+                dtype.append("ignored" if inside else "background")
+        best = iou.max(1).values.numpy() if len(D) else np.zeros(len(G))
+        arg = iou.argmax(1).numpy() if len(D) else np.zeros(len(G), int)
+        pred_cls = np.array([CLASSES[dc[a] - 1] if len(D) else None for a in arg], dtype=object)
+        overlap = np.where(pred_cls == g.cls.to_numpy(), "crowded", "wrong_class")
+        out = np.where(matched, "correct", np.where(best >= iou_thr, overlap, np.where(best >= 0.1, "mislocalized", "missed")))
+        gts.append(pd.DataFrame({"image_id": i, "cls": g.cls.to_numpy(), "size": g["size"].to_numpy(),
+                                 "occlusion": g.occlusion.to_numpy(), "outcome": out, "pred_cls": pred_cls}))
+        dets.append(pd.DataFrame({"image_id": i, "score": p.score.to_numpy(), "outcome": dtype}))
+    gt = pd.concat(gts, ignore_index=True)
+    gt["bucket"] = pd.cut(gt["size"], [0, 32, 96, 1e9], labels=["small", "medium", "large"])
+    return gt, pd.concat(dets, ignore_index=True)
+
+
+def error_tables(gt, det, show=True):
+    """GT outcome by size and by occlusion (% of row) and detection types; displayed with captions if show."""
+    by_size = pd.crosstab(gt.bucket, gt.outcome, normalize="index").mul(100).round(1).rename_axis("size (% of GT)")
+    by_occ = pd.crosstab(gt.occlusion, gt.outcome, normalize="index").mul(100).round(1).rename_axis("occlusion (% of GT)")
+    det_types = det.outcome.value_counts().rename("detections").to_frame().rename_axis("detection type")
+    det_types["%"] = (det_types.detections / det_types.detections.sum() * 100).round(1)
+    if show:
+        from IPython.display import display
+        cap = lambda df, t: df.style.set_caption(t).format("{:.1f}")
+        display(cap(by_size, "GT boxes by size: outcome (% of row)"),
+                cap(by_occ, "GT boxes by occlusion (0 none, 2 heavy): outcome (% of row)"),
+                det_types.style.set_caption("Detections (score >= 0.3) by type").format({"detections": "{:d}", "%": "{:.1f}"}))
+    return by_size, by_occ, det_types
+
+
+def plot_confusion(gt, title="Confusion matrix (GT boxes covered by a detection, % of row)"):
+    """Confusion matrix over the GT boxes covered by a detection (IoU >= 0.5): correct class on the diagonal.
+    Missed / mislocalized boxes have no matching detection and are not in it."""
+    found = gt[gt.outcome.isin(["correct", "crowded", "wrong_class"])]
+    pred = found.pred_cls.where(found.outcome == "wrong_class", found.cls)
+    cm = pd.crosstab(found.cls, pred).reindex(index=CLASSES, columns=CLASSES, fill_value=0)
+    cmp = cm.div(cm.sum(axis=1).replace(0, 1), axis=0).mul(100)
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.imshow(cmp.values, cmap="Blues", vmin=0, vmax=100)
+    ax.set_xticks(range(len(CLASSES)), CLASSES, rotation=45, ha="right"); ax.set_yticks(range(len(CLASSES)), CLASSES)
+    for i in range(len(CLASSES)):
+        for j in range(len(CLASSES)):
+            if cm.values[i, j]:
+                ax.text(j, i, f"{cmp.values[i, j]:.0f}%\n({cm.values[i, j]})", ha="center", va="center", fontsize=8,
+                        color="white" if cmp.values[i, j] > 50 else "black")
+    ax.set_xlabel("predicted class"); ax.set_ylabel("ground-truth class"); ax.set_title(title)
+    plt.colorbar(im, fraction=0.046); plt.tight_layout(); plt.show()
+    return cm
+
+
+def plot_failure_frames(gt, det, preds, split="val", score_thr=0.3):
+    """Frames with the most missed small objects, class confusions and background false positives:
+    ground truth on top, predictions (coloured by predicted class) below. Returns the picked image ids."""
+    per_img = gt.assign(missed_small=(gt.outcome == "missed") & (gt.bucket == "small"), confused=gt.outcome == "wrong_class") \
+        .groupby("image_id")[["missed_small", "confused"]].sum()
+    per_img["background_fp"] = det[det.outcome == "background"].groupby("image_id").size().reindex(per_img.index, fill_value=0)
+    picks = {k: per_img[k].idxmax() for k in ["missed_small", "confused", "background_fp"]}
+    handles = [plt.Line2D([], [], color=c, lw=3, label=n) for c, n in zip(COLORS, CLASSES)] + \
+              [plt.Rectangle((0, 0), 1, 1, fc="red", alpha=0.35, label="ignore region")]
+    for k, i in picks.items():
+        fig, (gax, pax) = plt.subplots(2, 1, figsize=(16, 19))
+        draw_frame(split, i, gax)
+        draw_frame(split, i, pax, preds=preds, score_thr=score_thr, show_gt=False, color_preds=True)
+        gax.set_title(f"{gax.get_title()} – most {k.replace('_', ' ')} ({per_img.loc[i, k]}) – ground truth", fontsize=12)
+        pax.set_title(f"predictions (score ≥ {score_thr})", fontsize=12)
+        fig.legend(handles=handles, loc="lower center", ncol=9, fontsize=11)
+        fig.subplots_adjust(left=0.01, right=0.99, top=0.97, bottom=0.04, hspace=0.06); plt.show()
+    return picks
+
+
 __all__ = [
     "SEED",
     "ROOT",
@@ -616,4 +743,9 @@ __all__ = [
     "push_file",
     "check_hf_write",
     "draw_frame",
+    "anchor_fit",
+    "match_errors",
+    "error_tables",
+    "plot_confusion",
+    "plot_failure_frames",
 ]
