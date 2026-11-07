@@ -550,9 +550,10 @@ def push_file(path, repo_id=HF_REPO, path_in_repo=None, private=False):
 # --------------------------------------------------------------------------------------
 # Visualization
 # --------------------------------------------------------------------------------------
-def draw_frame(split, image_id, ax, preds=None, score_thr=0.3):
-    """Draw GT boxes (coloured by class), ignore regions (red shade) and optional predictions (white) on a native-resolution frame.
-    preds: COCO-format results list (xywh native px) containing this image_id."""
+def draw_frame(split, image_id, ax, preds=None, score_thr=0.3, show_gt=True, color_preds=False):
+    """Draw GT boxes (coloured by class), ignore regions (red shade) and optional predictions on a native-resolution frame.
+    preds: COCO-format results list (xywh native px) containing this image_id; drawn white, or coloured by predicted class if color_preds.
+    show_gt=False hides the GT boxes (ignore regions stay)."""
     frames, boxes, ignore = load_split(split)
     row = frames.set_index("image_id").loc[image_id]
     im = Image.open(RAW_DIR / split / row.file_name).convert("RGBA")
@@ -562,12 +563,13 @@ def draw_frame(split, image_id, ax, preds=None, score_thr=0.3):
         od.rectangle([r.x, r.y, r.x + r.w, r.y + r.h], fill=(255, 0, 0, 90))
     im = Image.alpha_composite(im, ov).convert("RGB")
     d, lw = ImageDraw.Draw(im), max(2, im.width // 700)
-    for r in boxes[boxes.image_id == image_id].itertuples():
-        d.rectangle([r.x, r.y, r.x + r.w, r.y + r.h], outline=COLORS[r.category_id - 1], width=lw)
+    if show_gt:
+        for r in boxes[boxes.image_id == image_id].itertuples():
+            d.rectangle([r.x, r.y, r.x + r.w, r.y + r.h], outline=COLORS[r.category_id - 1], width=lw)
     for p in preds or []:
         if p["image_id"] == image_id and p["score"] >= score_thr:
             x, y, w, h = p["bbox"]
-            d.rectangle([x, y, x + w, y + h], outline="white", width=max(1, lw - 1))
+            d.rectangle([x, y, x + w, y + h], outline=COLORS[p["category_id"] - 1] if color_preds else "white", width=max(1, lw - 1))
     ax.imshow(im); ax.axis("off"); ax.set_title(f"{row.seq} #{row.frame_id}", fontsize=9)
 
 
