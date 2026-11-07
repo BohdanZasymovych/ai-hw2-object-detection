@@ -383,9 +383,9 @@ def fit(model, train_loader, optimizer, epochs, scheduler=None, eval_fn=None, am
             sums["train_loss"] += loss.item()
             for k, v in losses.items():
                 sums[k] += v.item()
+        row = {"epoch": ep, **{k: v / max(n, 1) for k, v in sums.items()}, "lr": optimizer.param_groups[0]["lr"]}  # lr used in this epoch
         if scheduler:
             scheduler.step()
-        row = {"epoch": ep, **{k: v / max(n, 1) for k, v in sums.items()}, "lr": optimizer.param_groups[0]["lr"]}
         if eval_fn:
             row.update({k: v for k, v in eval_fn().items() if not isinstance(v, dict)})
             if ckpt_path and row["mAP"] > best:
