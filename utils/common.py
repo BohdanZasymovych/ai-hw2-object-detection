@@ -559,6 +559,110 @@ def push_file(path, repo_id=HF_REPO, path_in_repo=None, private=False):
 
 
 # --------------------------------------------------------------------------------------
+# Test predictions and Kaggle submission
+# --------------------------------------------------------------------------------------
+def write_submission(results, image_ids, path):
+    """COCO-format results (native px, 1-based category_id) -> competition CSV: one row per image, 'class score x y w h'
+    groups with 0-based classes and the top-left corner in pixels; images without detections stay empty."""
+    rows = {i: [] for i in image_ids}
+    for r in results:
+        x, y, w, h = r["bbox"]
+        rows[r["image_id"]].append(f"{r['category_id'] - 1} {r['score']:.4f} {x:.1f} {y:.1f} {w:.1f} {h:.1f}")
+    pd.DataFrame({"image_id": list(rows), "PredictionString": [" ".join(v) for v in rows.values()]}).to_csv(path, index=False)
+    return Path(path)
+
+
+def check_submission(path, max_dets=500, tol=1.0):
+    """Validate a submission CSV against test_images.csv before uploading it; raises ValueError on the first problem.
+    Returns (frames, boxes). tol: allowed overshoot of a box beyond the image, in pixels."""
+    sub = pd.read_csv(path, keep_default_na=False, dtype=str)
+    test = pd.read_csv(RAW_DIR / "test_images.csv")
+    if list(sub.columns) != ["image_id", "PredictionString"]:
+        raise ValueError(f"wrong columns: {list(sub.columns)}")
+    if len(sub) != len(test) or set(sub.image_id) != set(test.image_id):
+        raise ValueError(f"image ids differ from test_images.csv ({len(sub)} rows, expected {len(test)})")
+    sizes = test.set_index("image_id")[["width", "height"]]
+    boxes = 0
+    for i, s in zip(sub.image_id, sub.PredictionString):
+        a = np.array(s.split(), dtype=np.float64)
+        if a.size % 6:
+            raise ValueError(f"{i}: the prediction string is not made of 6-value groups")
+        a = a.reshape(-1, 6)
+        W, H = sizes.loc[i]
+        if len(a) > max_dets:
+            raise ValueError(f"{i}: {len(a)} detections, at most {max_dets} are scored")
+        if ((a[:, 0] < 0) | (a[:, 0] > len(CLASSES) - 1) | (a[:, 0] % 1 != 0)).any():
+            raise ValueError(f"{i}: class id outside 0-{len(CLASSES) - 1}")
+        if ((a[:, 1] < 0) | (a[:, 1] > 1)).any():
+            raise ValueError(f"{i}: score outside [0, 1]")
+        if ((a[:, 2] < -tol) | (a[:, 3] < -tol) | (a[:, 2] + a[:, 4] > W + tol) | (a[:, 3] + a[:, 5] > H + tol)
+                | (a[:, 4] < 0) | (a[:, 5] < 0)).any():
+            raise ValueError(f"{i}: box outside the {W}x{H} image")
+        boxes += len(a)
+    return len(sub), boxes
+
+
+def make_submission(predict_fn, path, long_side=PREP["long_side"], label_offset=1, batch_size=1, num_workers=4):
+    """Run predict_fn (as for predict_dataset) on all test frames, write the competition CSV and validate it."""
+    ds = DetDataset("test", label_offset=label_offset, long_side=long_side)
+    results, ms = predict_dataset(predict_fn, ds, batch_size, num_workers)
+    path = write_submission(results, ds.image_ids, path)
+    frames, boxes = check_submission(path)
+    print(f"{path}: {frames} frames, {boxes} boxes, {ms:.0f} ms/img, {path.stat().st_size / 1e6:.0f} MB")
+    return path
+
+
+def _kaggle_cli(*args):
+    """Run the Kaggle CLI of this Python environment -> stdout. On Kaggle the credentials come from the secrets
+    KAGGLE_USERNAME and KAGGLE_KEY; locally the CLI uses its own configuration (~/.kaggle)."""
+    import os
+    import shutil
+    import sys
+    env = dict(os.environ)
+    if ON_KAGGLE:
+        env.update(kaggle_secrets())
+    local = Path(sys.executable).parent / "kaggle"
+    exe = str(local) if local.exists() else shutil.which("kaggle") or "kaggle"
+    return subprocess.run([exe, "competitions", *args], env=env, check=True, capture_output=True, text=True).stdout
+
+
+def kaggle_secrets():
+    """KAGGLE_USERNAME and KAGGLE_KEY from the Kaggle secrets; call early to fail before a long run."""
+    from kaggle_secrets import UserSecretsClient
+    try:
+        return {k: UserSecretsClient().get_secret(k) for k in ["KAGGLE_USERNAME", "KAGGLE_KEY"]}
+    except Exception as e:
+        raise RuntimeError("Add the secrets KAGGLE_USERNAME and KAGGLE_KEY (Add-ons -> Secrets, from a Kaggle API token) "
+                           f"and attach them to this notebook ({type(e).__name__}: {e})") from e
+
+
+def _submission_row(table, message):
+    """Newest row of the `submissions --csv` output with this description, or None."""
+    if "publicScore" not in table:                                # "No submissions found"
+        return None
+    df = pd.read_csv(io.StringIO(table[table.index("ref"):]), dtype=str, keep_default_na=False)
+    rows = df[df.description == message]
+    return rows.iloc[0].to_dict() if len(rows) else None
+
+
+def submit_to_kaggle(path, message, wait_s=600, poll_s=20):
+    """Upload a validated submission CSV (uses one of the daily submissions) and wait for its public score.
+    Returns the row of the submissions table (status, publicScore, ...), or None if it is still being scored."""
+    check_submission(path)
+    _kaggle_cli("submit", COMPETITION, "-f", str(path), "-m", message)
+    print(f"Submitted {path}: {message}")
+    t0 = time.time()
+    while time.time() - t0 < wait_s:
+        time.sleep(poll_s)
+        row = _submission_row(_kaggle_cli("submissions", COMPETITION, "--csv"), message)
+        if row and "pending" not in row["status"].lower():
+            print(f"status: {row['status']} | public score: {row['publicScore']}")
+            return row
+    print(f"Still being scored after {wait_s} s; see the Submissions tab of the competition")
+    return None
+
+
+# --------------------------------------------------------------------------------------
 # Visualization
 # --------------------------------------------------------------------------------------
 def draw_frame(split, image_id, ax, preds=None, score_thr=0.3, show_gt=True, color_preds=False):
@@ -786,6 +890,11 @@ __all__ = [
     "push_run",
     "pull_run",
     "push_file",
+    "write_submission",
+    "check_submission",
+    "make_submission",
+    "kaggle_secrets",
+    "submit_to_kaggle",
     "check_hf_write",
     "draw_frame",
     "anchor_fit",

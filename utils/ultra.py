@@ -52,13 +52,14 @@ def _resize_one(task):
 
 
 def export_yolo(out_dir=YOLO_DATA_DIR, step=PREP["frame_step"], long_side=PREP["long_side"], max_frames=None,
-                workers=4):
+                workers=4, trainval=False):
     """Ultralytics dataset of the subsampled train/val frames, resized once to `long_side` (same frames and
     resolution as DetDataset). Decoding the native frames (up to 3840x2160) in every epoch would make the 4 Kaggle
     CPUs the bottleneck. Labels: the provided YOLO txt files (8 classes, iscrowd=0 only; ignore regions are not
-    targets). max_frames: the same reproducible subset as DetDataset (quick tests). Returns the data.yaml path."""
+    targets). max_frames: the same reproducible subset as DetDataset (quick tests). trainval=True: the training list
+    holds train + val (final model only: its validation metrics are then meaningless). Returns the data yaml path."""
     out_dir = Path(out_dir)
-    t0, tasks = time.time(), []
+    t0, tasks, lists = time.time(), [], {}
     for split in ["train", "val"]:
         frames = subsample(load_split(split)[0], step)
         if max_frames:
@@ -71,13 +72,18 @@ def export_yolo(out_dir=YOLO_DATA_DIR, step=PREP["frame_step"], long_side=PREP["
             paths.append(str(dst.resolve()))
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"{split}.txt").write_text("\n".join(paths))
+        lists[split] = paths
     with get_context("fork").Pool(workers) as pool:
         for _ in pool.imap_unordered(_resize_one, tasks, chunksize=32):
             pass
     names = "".join(f"  {i}: {n}\n" for i, n in enumerate(CLASSES))
-    (out_dir / "data.yaml").write_text(f"path: {out_dir.resolve()}\ntrain: train.txt\nval: val.txt\nnames:\n{names}")
+    train_list, yaml = "train.txt", out_dir / "data.yaml"
+    if trainval:
+        train_list, yaml = "trainval.txt", out_dir / "data_trainval.yaml"
+        (out_dir / train_list).write_text("\n".join(lists["train"] + lists["val"]))
+    yaml.write_text(f"path: {out_dir.resolve()}\ntrain: {train_list}\nval: val.txt\nnames:\n{names}")
     print(f"YOLO dataset: {len(tasks)} frames at {long_side} px in {out_dir} ({time.time() - t0:.0f} s)")
-    return out_dir / "data.yaml"
+    return yaml
 
 
 # --------------------------------------------------------------------------------------
@@ -139,7 +145,7 @@ def _history(csv):
 
 def _train(cfg):
     """Body of the training subprocess. cfg: name, data, arch, p2, weights, nwd_ratio, nwd_c, train (Ultralytics
-    train arguments). Writes best.pt, results.csv, args.yaml and history.json into runs/<name>/."""
+    train arguments), use_last (keep the last epoch instead of the best one, for runs without a clean val set). Writes best.pt, results.csv, args.yaml and history.json into runs/<name>/."""
     from ultralytics import YOLO
     apply_patches(cfg.get("nwd_ratio", 0.0), cfg.get("nwd_c", 32.0))
     save = ULTRA_DIR / cfg["name"]
@@ -157,7 +163,8 @@ def _train(cfg):
     for f in ["results.csv", "args.yaml"]:
         shutil.copyfile(save / f, d / f)
     json.dump(_history(save / "results.csv"), open(d / "history.json", "w"), indent=1)
-    shutil.copyfile(save / "weights" / "best.pt", d / "best.pt")  # written last: marks the run as finished
+    weights = "last.pt" if cfg.get("use_last") else "best.pt"
+    shutil.copyfile(save / "weights" / weights, d / "best.pt")   # written last: marks the run as finished
 
 
 def train_runs(cfgs):
