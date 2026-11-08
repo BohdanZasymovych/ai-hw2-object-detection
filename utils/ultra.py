@@ -218,7 +218,8 @@ def ultra_predictor(model, imgsz=PREP["long_side"], nms=0.7, half=True):
     def predict(images):
         arrs = [np.ascontiguousarray((im.permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)[:, :, ::-1])
                 for im in images]                                # Ultralytics expects BGR uint8 (OpenCV convention)
-        res = model.predict(arrs, imgsz=imgsz, conf=0.001, iou=nms, max_det=EVAL_DETS, half=half and dev == 0,
+        res = model.predict(arrs, imgsz=imgsz, conf=0.001, iou=nms, max_det=EVAL_DETS,
+                            quantize=16 if half and dev == 0 else None,   # 16: FP16 inference ('half' is deprecated)
                             device=dev, verbose=False)
         return [dict(boxes=r.boxes.xyxy, scores=r.boxes.conf, labels=r.boxes.cls.long()) for r in res]
     return predict
