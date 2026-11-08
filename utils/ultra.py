@@ -127,9 +127,10 @@ def export_yolo(out_dir=YOLO_DATA_DIR, step=PREP["frame_step"], long_side=PREP["
     CPUs the bottleneck. Labels: the provided YOLO txt files (8 classes, iscrowd=0 only; ignore regions are not
     targets). max_frames: the same reproducible subset as DetDataset (quick tests). trainval=True: the training list
     holds train + val (final model only: its validation metrics are then meaningless). Returns the data yaml path.
-    Data strategies: mask_ignore paints ignore regions grey (train only); lowres ({long side: share}) enlarges that
-    share of train frames from a smaller size (train only); tile (px) keeps one crop per frame, cycling through the
-    overlapping windows of `tile_windows` along each sequence, so an epoch has as many images as without tiling."""
+    Data strategies: mask_ignore paints ignore regions grey (training frames only); lowres ({long side: share}) enlarges
+    that share of training frames from a smaller size (training frames only); tile (px) keeps one crop per frame, cycling
+    through the overlapping windows of `tile_windows` along each sequence, so an epoch has as many images as without
+    tiling. Use a separate out_dir for trainval with mask_ignore or lowres: existing frames are not rewritten."""
     out_dir = Path(out_dir)
     t0, tasks, lists = time.time(), [], {}
     for split in ["train", "val"]:
@@ -142,7 +143,7 @@ def export_yolo(out_dir=YOLO_DATA_DIR, step=PREP["frame_step"], long_side=PREP["
             dst = out_dir / split / f
             lbl = Path(f.replace("images/", "labels/", 1)).with_suffix(".txt")
             opts = dict(tile=tile, index=int(index))
-            if split == "train":
+            if split == "train" or trainval:                     # with trainval, val frames are training frames too
                 opts.update(mask_ignore=mask_ignore, degrade_to=_lowres_target(f, lowres))
             tasks.append((RAW_DIR / split / f, dst, RAW_DIR / split / lbl, out_dir / split / lbl, long_side, opts))
             paths.append(str(dst.resolve()))
