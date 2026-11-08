@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import torch
 from PIL import Image
+from torchvision.ops import clip_boxes_to_image
 
 from utils.common import (CLASSES, DATA_DIR, DEVICE, EVAL_DETS, ON_KAGGLE, OUT_DIR, PREP, RAW_DIR, ROOT, SEED,
                           load_split, run_dir, subsample)
@@ -306,7 +307,8 @@ def ultra_predictor(model, imgsz=PREP["long_side"], nms=0.7, half=True):
     long side) -> boxes in the same pixels, scores and 0-based labels (use label_offset=0). Ultralytics only pads the
     short side to a multiple of the stride. nms: IoU of the final NMS (Ultralytics default 0.7).
     RT-DETR: Ultralytics stretches each frame to imgsz x imgsz and there is no NMS (nms is ignored), so the frames must
-    keep at least imgsz on the long side; if they were resized to it first, the height would be upsampled from less."""
+    keep at least imgsz on the long side; if they were resized to it first, the height would be upsampled from less.
+    Boxes are clipped to the frame: Ultralytics does this for YOLO, but not for RT-DETR."""
     dev = 0 if DEVICE.type == "cuda" else "cpu"
 
     def predict(images):
@@ -315,7 +317,8 @@ def ultra_predictor(model, imgsz=PREP["long_side"], nms=0.7, half=True):
         res = model.predict(arrs, imgsz=imgsz, conf=0.001, iou=nms, max_det=EVAL_DETS,
                             quantize=16 if half and dev == 0 else None,   # 16: FP16 inference ('half' is deprecated)
                             device=dev, verbose=False)
-        return [dict(boxes=r.boxes.xyxy, scores=r.boxes.conf, labels=r.boxes.cls.long()) for r in res]
+        return [dict(boxes=clip_boxes_to_image(r.boxes.xyxy, r.orig_shape), scores=r.boxes.conf, labels=r.boxes.cls.long())
+                for r in res]
     return predict
 
 
