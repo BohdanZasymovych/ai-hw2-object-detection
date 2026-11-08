@@ -11,6 +11,7 @@ the notebook clean and lets each run use its own GPU.
 
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 from torchvision.ops import clip_boxes_to_image
 
 from utils.common import (CLASSES, DATA_DIR, DEVICE, EVAL_DETS, ON_KAGGLE, OUT_DIR, PREP, RAW_DIR, ROOT, SEED,
@@ -36,29 +37,99 @@ MODEL_CFG_DIR = ROOT / "utils" / "models"
 # --------------------------------------------------------------------------------------
 # Dataset export
 # --------------------------------------------------------------------------------------
+def _read_yolo(path, cols):
+    """Rows of a YOLO txt file as an array with `cols` columns (empty if the file is missing or empty)."""
+    if not path.exists() or path.stat().st_size == 0:
+        return np.zeros((0, cols))
+    return np.loadtxt(path, ndmin=2).reshape(-1, cols)
+
+
+def _covered(boxes, regions):
+    """Largest share of each normalised cxcywh box covered by one of the normalised cxcywh regions."""
+    if not len(boxes) or not len(regions):
+        return np.zeros(len(boxes))
+    b, r = boxes[:, None], regions[None]
+    ix = np.minimum(b[..., 0] + b[..., 2] / 2, r[..., 0] + r[..., 2] / 2) - np.maximum(b[..., 0] - b[..., 2] / 2, r[..., 0] - r[..., 2] / 2)
+    iy = np.minimum(b[..., 1] + b[..., 3] / 2, r[..., 1] + r[..., 3] / 2) - np.maximum(b[..., 1] - b[..., 3] / 2, r[..., 1] - r[..., 3] / 2)
+    return (ix.clip(min=0) * iy.clip(min=0)).max(1) / (boxes[:, 2] * boxes[:, 3])
+
+
+def _crop_labels(labels, size, window, min_visible=0.3, min_px=2):
+    """Normalised YOLO labels of a frame of `size` (w, h) -> labels of the crop `window` (x1, y1, x2, y2). Boxes with
+    less than `min_visible` of their area inside the crop or a side below `min_px` are dropped."""
+    w, h = size
+    x1, y1, x2, y2 = window
+    cx, cy, bw, bh = labels[:, 1] * w, labels[:, 2] * h, labels[:, 3] * w, labels[:, 4] * h
+    a0, b0, a1, b1 = cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2
+    a, b, c, d = a0.clip(x1, x2), b0.clip(y1, y2), a1.clip(x1, x2), b1.clip(y1, y2)
+    keep = ((c - a) * (d - b) >= min_visible * bw * bh) & (c - a >= min_px) & (d - b >= min_px)
+    tw, th = x2 - x1, y2 - y1
+    return np.c_[labels[:, 0], ((a + c) / 2 - x1) / tw, ((b + d) / 2 - y1) / th, (c - a) / tw, (d - b) / th][keep]
+
+
 def _resize_one(task):
-    src, dst, lbl_src, lbl_dst, long_side = task
+    src, dst, lbl_src, lbl_dst, long_side, opts = task
+    mask_ignore, degrade_to, tile = opts.get("mask_ignore"), opts.get("degrade_to"), opts.get("tile")
+    im = Image.open(src)
+    ow, oh = im.size
+    s = long_side / max(ow, oh)
+    size = (round(ow * s), round(oh * s))
+    regions = _read_yolo(lbl_src.parents[2] / "ignore" / lbl_src.parent.name / lbl_src.name, 4) if mask_ignore else None
+    window = None
+    if tile:
+        from ultralytics.data.utils import tile_windows
+        windows = tile_windows(size[::-1], tile)
+        window = windows[opts["index"] % len(windows)]
     if not dst.exists():
-        im = Image.open(src)
-        s = long_side / max(im.size)
-        size = (round(im.width * s), round(im.height * s))
         im.draft("RGB", size)                                    # fast JPEG decoding at reduced size
+        im = im.convert("RGB")
+        if degrade_to:                                           # low-resolution frame: lost detail stays lost when enlarged
+            k = degrade_to / max(ow, oh)
+            im = im.resize((round(ow * k), round(oh * k)), Image.BILINEAR)
+        im = im.resize(size, Image.BILINEAR)
+        if mask_ignore:
+            draw = ImageDraw.Draw(im)
+            for cx, cy, w, h in regions:
+                draw.rectangle([(cx - w / 2) * size[0], (cy - h / 2) * size[1], (cx + w / 2) * size[0], (cy + h / 2) * size[1]],
+                               fill=(114, 114, 114))
+        if window:
+            im = im.crop(window)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        im.convert("RGB").resize(size, Image.BILINEAR).save(dst, quality=95)
+        im.save(dst, quality=95)
     lbl_dst.parent.mkdir(parents=True, exist_ok=True)
-    if lbl_src.exists():                                         # YOLO labels are normalised: resizing keeps them valid
+    if mask_ignore or tile:
+        labels = _read_yolo(lbl_src, 5)
+        if mask_ignore:                                          # a box mostly under the grey paint is no longer visible
+            labels = labels[_covered(labels[:, 1:], regions) <= 0.5]
+        if tile:
+            labels = _crop_labels(labels, size, window)
+        lbl_dst.write_text("".join(f"{int(c)} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n" for c, x, y, w, h in labels))
+    elif lbl_src.exists():                                       # YOLO labels are normalised: resizing keeps them valid
         shutil.copyfile(lbl_src, lbl_dst)
     else:
         lbl_dst.write_text("")
 
 
+def _lowres_target(file_name, lowres):
+    """Long side a train frame is degraded to ({long side: share of frames}), or None. Fixed per frame by SEED."""
+    r = random.Random(f"{SEED}:{file_name}").random()
+    for side, share in (lowres or {}).items():
+        if r < share:
+            return side
+        r -= share
+    return None
+
+
 def export_yolo(out_dir=YOLO_DATA_DIR, step=PREP["frame_step"], long_side=PREP["long_side"], max_frames=None,
-                workers=4, trainval=False):
+                workers=4, trainval=False, mask_ignore=False, lowres=None, tile=None):
     """Ultralytics dataset of the subsampled train/val frames, resized once to `long_side` (same frames and
     resolution as DetDataset). Decoding the native frames (up to 3840x2160) in every epoch would make the 4 Kaggle
     CPUs the bottleneck. Labels: the provided YOLO txt files (8 classes, iscrowd=0 only; ignore regions are not
     targets). max_frames: the same reproducible subset as DetDataset (quick tests). trainval=True: the training list
-    holds train + val (final model only: its validation metrics are then meaningless). Returns the data yaml path."""
+    holds train + val (final model only: its validation metrics are then meaningless). Returns the data yaml path.
+    Data strategies: mask_ignore paints ignore regions grey (train only); lowres ({long side: share}) enlarges that
+    share of train frames from a smaller size (train only); tile (px) keeps one crop per frame, cycling through the
+    overlapping windows of `tile_windows` along each sequence, so an epoch has as many images as without tiling."""
     out_dir = Path(out_dir)
     t0, tasks, lists = time.time(), [], {}
     for split in ["train", "val"]:
@@ -66,10 +137,14 @@ def export_yolo(out_dir=YOLO_DATA_DIR, step=PREP["frame_step"], long_side=PREP["
         if max_frames:
             frames = frames.sample(min(max_frames, len(frames)), random_state=SEED).sort_index()
         paths = []
-        for f in frames.file_name:                               # images/<seq>/<frame>.jpg
+        positions = frames.groupby("seq").cumcount()
+        for f, index in zip(frames.file_name, positions):        # images/<seq>/<frame>.jpg
             dst = out_dir / split / f
             lbl = Path(f.replace("images/", "labels/", 1)).with_suffix(".txt")
-            tasks.append((RAW_DIR / split / f, dst, RAW_DIR / split / lbl, out_dir / split / lbl, long_side))
+            opts = dict(tile=tile, index=int(index))
+            if split == "train":
+                opts.update(mask_ignore=mask_ignore, degrade_to=_lowres_target(f, lowres))
+            tasks.append((RAW_DIR / split / f, dst, RAW_DIR / split / lbl, out_dir / split / lbl, long_side, opts))
             paths.append(str(dst.resolve()))
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"{split}.txt").write_text("\n".join(paths))
@@ -302,19 +377,20 @@ def load_ultra(path):
     return (RTDETR if is_detr else YOLO)(str(path))
 
 
-def ultra_predictor(model, imgsz=PREP["long_side"], nms=0.7, half=True):
+def ultra_predictor(model, imgsz=PREP["long_side"], nms=0.7, half=True, tile=False):
     """predict_fn for common.predict_dataset: DetDataset images (float RGB in [0, 1], already resized to imgsz on the
     long side) -> boxes in the same pixels, scores and 0-based labels (use label_offset=0). Ultralytics only pads the
     short side to a multiple of the stride. nms: IoU of the final NMS (Ultralytics default 0.7).
     RT-DETR: Ultralytics stretches each frame to imgsz x imgsz and there is no NMS (nms is ignored), so the frames must
     keep at least imgsz on the long side; if they were resized to it first, the height would be upsampled from less.
-    Boxes are clipped to the frame: Ultralytics does this for YOLO, but not for RT-DETR."""
+    Boxes are clipped to the frame: Ultralytics does this for YOLO, but not for RT-DETR.
+    tile (px): predict on overlapping crops of this size; Ultralytics merges them with NMS at IoU `nms`."""
     dev = 0 if DEVICE.type == "cuda" else "cpu"
 
     def predict(images):
         arrs = [np.ascontiguousarray((im.permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)[:, :, ::-1])
                 for im in images]                                # Ultralytics expects BGR uint8 (OpenCV convention)
-        res = model.predict(arrs, imgsz=imgsz, conf=0.001, iou=nms, max_det=EVAL_DETS,
+        res = model.predict(arrs, imgsz=imgsz, conf=0.001, iou=nms, max_det=EVAL_DETS, tile=tile,
                             quantize=16 if half and dev == 0 else None,   # 16: FP16 inference ('half' is deprecated)
                             device=dev, verbose=False)
         return [dict(boxes=clip_boxes_to_image(r.boxes.xyxy, r.orig_shape), scores=r.boxes.conf, labels=r.boxes.cls.long())

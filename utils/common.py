@@ -158,8 +158,9 @@ class DetDataset(torch.utils.data.Dataset):
     orig_size=(h, w); divide resized coordinates by scale to get native pixels. Test frames have no boxes."""
 
     def __init__(self, split, train=False, step=None, long_side=PREP["long_side"], aug=PREP["train_aug"],
-                 mask_ignore=PREP["mask_ignore"], label_offset=1, max_frames=None):
-        self.split, self.train, self.long_side = split, train, long_side
+                 mask_ignore=PREP["mask_ignore"], label_offset=1, max_frames=None, degrade_to=None):
+        # degrade_to: first shrink the long side to this size, then enlarge to long_side (simulates low-resolution frames)
+        self.split, self.train, self.long_side, self.degrade_to = split, train, long_side, degrade_to
         self.aug, self.mask_ignore, self.label_offset = (aug if train else None), mask_ignore, label_offset
         if split == "test":
             frames = pd.read_csv(RAW_DIR / "test_images.csv")
@@ -201,7 +202,11 @@ class DetDataset(torch.utils.data.Dataset):
         s = self.long_side / max(ow, oh)
         nw, nh = round(ow * s), round(oh * s)
         im.draft("RGB", (nw, nh))                                 # fast JPEG decoding at reduced size
-        im = im.convert("RGB").resize((nw, nh), Image.BILINEAR)
+        im = im.convert("RGB")
+        if self.degrade_to:
+            k = self.degrade_to / max(ow, oh)
+            im = im.resize((round(ow * k), round(oh * k)), Image.BILINEAR)
+        im = im.resize((nw, nh), Image.BILINEAR)
         sx, sy = nw / ow, nh / oh
         xywh, cats = self.boxes.get(r["image_id"], (np.zeros((0, 4), np.float32), np.zeros(0, np.int64)))
         boxes = np.stack([xywh[:, 0], xywh[:, 1], xywh[:, 0] + xywh[:, 2], xywh[:, 1] + xywh[:, 3]], 1) * [sx, sy, sx, sy]
@@ -292,6 +297,44 @@ def coco_evaluate(results, split="val", step=None, image_ids=None, max_dets=EVAL
              AR=mean(R[:, :, 0, 2]))
     m["per_class"] = {c: mean(P[:, :, k, 0, 2]) for k, c in enumerate(CLASSES)}
     return m
+
+
+def wbf(model_results, iou=0.6, score_thr=0.01, max_dets=EVAL_DETS):
+    """Weighted Boxes Fusion (Solovyev et al., 2019) of the COCO-format results of several models, per image and class.
+    Overlapping boxes are averaged, weighted by score. A fused box scores the sum of its members' scores / number of
+    models, so boxes found by several models rank above boxes found by one."""
+    grouped = defaultdict(list)
+    for results in model_results:
+        for r in results:
+            if r["score"] >= score_thr:
+                grouped[r["image_id"], r["category_id"]].append(r)
+    by_image = defaultdict(list)
+    for (image_id, category_id), rows in grouped.items():
+        rows.sort(key=lambda r: -r["score"])
+        fused, members = np.zeros((0, 4)), []                     # fused boxes (xyxy) and (box, score) of their members
+        for r in rows:
+            x, y, w, h = r["bbox"]
+            b = np.array([x, y, x + w, y + h])
+            j = -1
+            if len(fused):
+                iw = (np.minimum(fused[:, 2], b[2]) - np.maximum(fused[:, 0], b[0])).clip(min=0)
+                ih = (np.minimum(fused[:, 3], b[3]) - np.maximum(fused[:, 1], b[1])).clip(min=0)
+                union = (fused[:, 2] - fused[:, 0]) * (fused[:, 3] - fused[:, 1]) + w * h - iw * ih
+                ious = iw * ih / np.maximum(union, 1e-6)
+                if ious.max() > iou:
+                    j = int(ious.argmax())
+            if j < 0:
+                fused = np.vstack([fused, b])
+                members.append([(b, r["score"])])
+            else:
+                members[j].append((b, r["score"]))
+                scores = np.array([s for _, s in members[j]])
+                fused[j] = (np.array([m for m, _ in members[j]]) * scores[:, None]).sum(0) / scores.sum()
+        for b, m in zip(fused, members):
+            by_image[image_id].append(dict(image_id=image_id, category_id=category_id,
+                                           bbox=[float(b[0]), float(b[1]), float(b[2] - b[0]), float(b[3] - b[1])],
+                                           score=sum(s for _, s in m) / len(model_results)))
+    return [r for rows in by_image.values() for r in sorted(rows, key=lambda r: -r["score"])[:max_dets]]
 
 
 def evaluate_model(predict_fn, split="val", max_frames=None, batch_size=4, num_workers=4, label_offset=1,
@@ -883,6 +926,7 @@ __all__ = [
     "tv_size_kwargs",
     "predict_dataset",
     "coco_evaluate",
+    "wbf",
     "evaluate_model",
     "torchvision_predictor",
     "fit",
