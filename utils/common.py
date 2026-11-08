@@ -148,20 +148,6 @@ def export_coco(split, path, step=PREP["frame_step"]):
     return path
 
 
-def export_yolo(out_dir=OUT_DIR / "yolo", step=PREP["frame_step"]):
-    """Ultralytics dataset: image lists of the subsampled frames. YOLO txt labels are found next to the
-    images (images/ -> labels/), so nothing is copied. Returns the data.yaml path."""
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for split in ["train", "val"]:
-        frames = subsample(load_split(split)[0], step)
-        paths = [str((RAW_DIR / split / f).resolve()) for f in frames.file_name]
-        (out_dir / f"{split}.txt").write_text("\n".join(paths))
-    names = "".join(f"  {i}: {n}\n" for i, n in enumerate(CLASSES))
-    (out_dir / "data.yaml").write_text(f"path: {out_dir.resolve()}\ntrain: train.txt\nval: val.txt\nnames:\n{names}")
-    return out_dir / "data.yaml"
-
-
 # --------------------------------------------------------------------------------------
 # Dataset and transforms
 # --------------------------------------------------------------------------------------
@@ -307,9 +293,10 @@ def coco_evaluate(results, split="val", step=None, image_ids=None, max_dets=EVAL
     return m
 
 
-def evaluate_model(predict_fn, split="val", max_frames=None, batch_size=4, num_workers=4, label_offset=1):
-    """Full evaluation of a model on a split -> metrics dict (+ ms_per_img)."""
-    ds = DetDataset(split, label_offset=label_offset, max_frames=max_frames)
+def evaluate_model(predict_fn, split="val", max_frames=None, batch_size=4, num_workers=4, label_offset=1,
+                   long_side=PREP["long_side"]):
+    """Full evaluation of a model on a split -> metrics dict (+ ms_per_img). long_side: input resolution of the frames."""
+    ds = DetDataset(split, label_offset=label_offset, max_frames=max_frames, long_side=long_side)
     results, ms = predict_dataset(predict_fn, ds, batch_size, num_workers)
     return {**coco_evaluate(results, split, image_ids=ds.image_ids), "ms_per_img": ms}
 
@@ -471,6 +458,17 @@ def save_run(name, config=None, history=None, metrics=None, preds=None, model=No
         json.dump(preds, open(d / "preds_val.json", "w"))
     if model is not None:
         torch.save(model.state_dict(), d / "best.pt")
+    return d
+
+
+def fetch_run(name, weights=False, hint=""):
+    """Local folder of a finished run; downloaded from the HF repo if it was produced in another session.
+    hint: appended to the error message (e.g. which RUN stage computes it)."""
+    d = RUNS_DIR / name
+    if not (d / "metrics.json").exists() or (weights and not (d / "best.pt").exists()):
+        pull_run(name, weights=weights)
+    if not (d / "metrics.json").exists():
+        raise FileNotFoundError(f"Run '{name}' has no results locally or in the HF repo {HF_REPO}. {hint}".strip())
     return d
 
 
@@ -660,6 +658,15 @@ def error_tables(gt, det, show=True):
     return by_size, by_occ, det_types
 
 
+def size_coverage(gt):
+    """Share of GT boxes covered by a detection (IoU >= 0.5, any class) by COCO size bucket and overall,
+    from the GT table of match_errors."""
+    found = gt.outcome.isin(["correct", "crowded", "wrong_class"])
+    r = found.groupby(gt.bucket.astype(str)).mean().reindex(["small", "medium", "large"])
+    r["all"] = found.mean()
+    return r
+
+
 def plot_confusion(gt, title="Confusion matrix (GT boxes covered by a detection, % of row)"):
     """Confusion matrix over the GT boxes covered by a detection (IoU >= 0.5): correct class on the diagonal.
     Missed / mislocalized boxes have no matching detection and are not in it."""
@@ -721,7 +728,6 @@ __all__ = [
     "subsample",
     "coco_gt",
     "export_coco",
-    "export_yolo",
     "DetDataset",
     "collate",
     "make_loader",
@@ -736,6 +742,7 @@ __all__ = [
     "env_info",
     "run_dir",
     "save_run",
+    "fetch_run",
     "load_results",
     "hf_token",
     "push_run",
@@ -746,6 +753,7 @@ __all__ = [
     "anchor_fit",
     "match_errors",
     "error_tables",
+    "size_coverage",
     "plot_confusion",
     "plot_failure_frames",
 ]
