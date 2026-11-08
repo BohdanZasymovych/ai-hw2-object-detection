@@ -25,8 +25,8 @@ import torch
 from PIL import Image, ImageDraw
 from torchvision.ops import clip_boxes_to_image
 
-from utils.common import (CLASSES, DATA_DIR, DEVICE, EVAL_DETS, ON_KAGGLE, OUT_DIR, PREP, RAW_DIR, ROOT, SEED,
-                          load_split, run_dir, subsample)
+from utils.common import (CLASSES, DATA_DIR, DEVICE, EVAL_DETS, HF_REPO, ON_KAGGLE, OUT_DIR, PREP, RAW_DIR, ROOT, SEED,
+                          hf_token, load_split, run_dir, subsample)
 
 ULTRA_VERSION = "8.4.207"                                     # tested version; the patches depend on its internals
 ULTRA_DIR = OUT_DIR / "ultralytics"                           # Ultralytics run folders and downloaded weights
@@ -290,10 +290,53 @@ def _train(cfg):
     shutil.copyfile(save / "weights" / weights, d / "best.pt")   # written last: marks the run as finished
 
 
-def train_runs(cfgs):
+CHECKPOINT_FILES = ("results.csv", "weights/best.pt", "weights/last.pt")     # last.pt last: it marks a resumable run
+
+
+def _push_checkpoint(name, pushed):
+    """Upload the training state of a running run to the HF repo (runs/<name>/ckpt/), so a lost session loses little.
+    pushed: {file: modification time already uploaded}. A failed upload is only reported: training must go on."""
+    from huggingface_hub import HfApi
+    api = HfApi(token=hf_token())
+    for rel in CHECKPOINT_FILES:
+        f = ULTRA_DIR / name / rel
+        if not f.exists() or pushed.get(rel) == f.stat().st_mtime or time.time() - f.stat().st_mtime < 30:
+            continue                                             # missing, unchanged or possibly still being written
+        mtime, tmp = f.stat().st_mtime, f.with_name(f.name + ".upload")
+        try:
+            shutil.copyfile(f, tmp)
+            api.upload_file(path_or_fileobj=str(tmp), path_in_repo=f"runs/{name}/ckpt/{Path(rel).name}", repo_id=HF_REPO,
+                            commit_message=f"checkpoint {name}")
+            pushed[rel] = mtime
+        except Exception as e:
+            print(f"{name}: checkpoint upload of {rel} failed ({type(e).__name__}: {e}); retrying later")
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
+def _pull_checkpoint(name):
+    """Restore the training state uploaded by an earlier session of this run, if any, so that _train resumes it."""
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError
+    if (ULTRA_DIR / name / "weights" / "last.pt").exists():
+        return
+    try:
+        for rel in CHECKPOINT_FILES:
+            src = hf_hub_download(HF_REPO, f"runs/{name}/ckpt/{Path(rel).name}", token=hf_token())
+            dst = ULTRA_DIR / name / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+        print(f"{name}: resuming from the checkpoint in the HF repo")
+    except EntryNotFoundError:                                   # nothing uploaded yet: a fresh start
+        pass
+
+
+def train_runs(cfgs, checkpoint_min=None):
     """Train the given runs (list of cfg dicts for _train), skipping finished ones (runs/<name>/best.pt exists).
     With 2+ GPUs the runs are trained concurrently, one per GPU; otherwise one after another. Output of each run
-    goes to runs/<name>/train.log; a short summary is printed at the end."""
+    goes to runs/<name>/train.log; a short summary is printed at the end.
+    checkpoint_min: upload the training state to the HF repo every this many minutes and resume from it if a run was
+    interrupted in an earlier session (for long runs)."""
     todo = [c for c in cfgs if not (run_dir(c["name"]) / "best.pt").exists()]
     for c in cfgs:
         if c not in todo:
@@ -307,12 +350,22 @@ def train_runs(cfgs):
     for i in range(0, len(todo), n_gpus):
         procs, t0 = [], time.time()
         for gpu, c in enumerate(todo[i:i + n_gpus]):
-            log = open(run_dir(c["name"]) / "train.log", "w")
+            if checkpoint_min:
+                _pull_checkpoint(c["name"])
+            log = open(run_dir(c["name"]) / "train.log", "a" if checkpoint_min else "w")
             gpu_env = {"CUDA_VISIBLE_DEVICES": str(gpu)} if n_gpus > 1 else {}   # pin a GPU only when sharing them
             p = subprocess.Popen([sys.executable, "-m", "utils.ultra", json.dumps(c, default=str)], cwd=ULTRA_DIR,
                                  env={**env, **gpu_env}, stdout=log, stderr=subprocess.STDOUT)
             procs.append((c["name"], gpu, p, log))
             print(f"{c['name']}: training on GPU {gpu}, log in {run_dir(c['name']) / 'train.log'}")
+        pushed, last_push = {name: {} for name, *_ in procs}, time.time()
+        while checkpoint_min and any(p.poll() is None for _, _, p, _ in procs):
+            time.sleep(30)
+            if time.time() - last_push >= checkpoint_min * 60:
+                for name, _, p, _ in procs:
+                    if p.poll() is None:
+                        _push_checkpoint(name, pushed[name])
+                last_push = time.time()
         for name, gpu, p, log in procs:
             p.wait()
             log.close()
