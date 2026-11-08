@@ -30,6 +30,7 @@ lightning_logs/
 *.safetensors
 
 # Submissions / predictions
+submissions/
 submission*.csv
 predictions/
 

@@ -59,6 +59,7 @@ DATA_DIR = ROOT / "data"
 RAW_DIR = _find_raw_dir() if ON_KAGGLE else DATA_DIR / "raw"                  # read-only on Kaggle
 OUT_DIR = Path("/kaggle/working") if ON_KAGGLE else ROOT                      # where outputs are written
 RUNS_DIR = OUT_DIR / "runs"                                                   # one folder per experiment
+SUBMISSIONS_DIR = OUT_DIR / "submissions"                                     # competition CSVs
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CLASSES = ["person", "bicycle", "car", "van", "truck", "tricycle", "bus", "motor"]   # COCO category_id = index + 1
@@ -602,11 +603,13 @@ def check_submission(path, max_dets=500, tol=1.0):
     return len(sub), boxes
 
 
-def make_submission(predict_fn, path, long_side=PREP["long_side"], label_offset=1, batch_size=1, num_workers=4):
-    """Run predict_fn (as for predict_dataset) on all test frames, write the competition CSV and validate it."""
+def make_submission(predict_fn, name, long_side=PREP["long_side"], label_offset=1, batch_size=1, num_workers=4):
+    """Run predict_fn (as for predict_dataset) on all test frames, write the competition CSV to
+    submissions/submission_<name>.csv and validate it. Returns the path."""
     ds = DetDataset("test", label_offset=label_offset, long_side=long_side)
     results, ms = predict_dataset(predict_fn, ds, batch_size, num_workers)
-    path = write_submission(results, ds.image_ids, path)
+    SUBMISSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    path = write_submission(results, ds.image_ids, SUBMISSIONS_DIR / f"submission_{name}.csv")
     frames, boxes = check_submission(path)
     print(f"{path}: {frames} frames, {boxes} boxes, {ms:.0f} ms/img, {path.stat().st_size / 1e6:.0f} MB")
     return path
@@ -862,6 +865,7 @@ __all__ = [
     "RAW_DIR",
     "OUT_DIR",
     "RUNS_DIR",
+    "SUBMISSIONS_DIR",
     "DEVICE",
     "CLASSES",
     "COLORS",
