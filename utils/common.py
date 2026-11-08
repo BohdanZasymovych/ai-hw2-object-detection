@@ -301,8 +301,9 @@ def coco_evaluate(results, split="val", step=None, image_ids=None, max_dets=EVAL
 
 def wbf(model_results, iou=0.6, score_thr=0.01, max_dets=EVAL_DETS):
     """Weighted Boxes Fusion (Solovyev et al., 2019) of the COCO-format results of several models, per image and class.
-    Overlapping boxes are averaged, weighted by score. A fused box scores the sum of its members' scores / number of
-    models, so boxes found by several models rank above boxes found by one."""
+    Overlapping boxes are averaged, weighted by score. A fused box scores the mean of its members' scores times
+    min(members, models) / models (as in the paper), so boxes found by several models rank above boxes found by one,
+    and several overlapping boxes of one model (RT-DETR has no NMS) do not add up."""
     grouped = defaultdict(list)
     for results in model_results:
         for r in results:
@@ -333,7 +334,7 @@ def wbf(model_results, iou=0.6, score_thr=0.01, max_dets=EVAL_DETS):
         for b, m in zip(fused, members):
             by_image[image_id].append(dict(image_id=image_id, category_id=category_id,
                                            bbox=[float(b[0]), float(b[1]), float(b[2] - b[0]), float(b[3] - b[1])],
-                                           score=sum(s for _, s in m) / len(model_results)))
+                                           score=sum(s for _, s in m) / len(m) * min(len(m), len(model_results)) / len(model_results)))
     return [r for rows in by_image.values() for r in sorted(rows, key=lambda r: -r["score"])[:max_dets]]
 
 
