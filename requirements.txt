@@ -11,6 +11,7 @@ pandas>=2.0           # tested 3.1.1
 matplotlib>=3.7       # tested 3.11.2
 pillow>=10.0          # tested 13.0.0
 tqdm>=4.65            # tested 4.70.1
+ultralytics==8.4.207  # pinned: YOLO11 / RT-DETR (notebooks 04-06); utils/ultra.py patches its loss internals
 
 # Notebooks and data download (local)
 ipykernel>=6.0        # tested 7.4.0

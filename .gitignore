@@ -40,3 +40,6 @@ predictions/
 
 # AI-context
 ai-context/
+
+# Ultralytics run folders and downloaded weights (notebooks 04-06, local runs)
+/ultralytics/
