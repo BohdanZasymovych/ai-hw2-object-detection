@@ -596,16 +596,41 @@ def _train_wh(long_side=PREP["long_side"], n=100_000):
     return wh[idx], (bx["size"].to_numpy() < 32)[idx]
 
 
+def _best_anchor_iou(wh, sizes, ratios):
+    """Best IoU of each (w, h) box with any anchor shape (position ignored)."""
+    sizes = [s for lvl in sizes for s in (lvl if isinstance(lvl, (tuple, list)) else (lvl,))]
+    a = np.array([(s / np.sqrt(r), s * np.sqrt(r)) for s in sizes for r in ratios])        # (w, h), r = h / w
+    inter = np.minimum(wh[:, None, 0], a[None, :, 0]) * np.minimum(wh[:, None, 1], a[None, :, 1])
+    return (inter / (wh[:, 0:1] * wh[:, 1:2] + a[:, 0] * a[:, 1] - inter)).max(1)
+
+
 def anchor_fit(sizes, ratios=(0.5, 1.0, 2.0), long_side=PREP["long_side"]):
     """How well a set of anchor shapes fits the train boxes: best IoU of each box with any anchor shape (position ignored).
     sizes: anchor sizes in input pixels, flat or one tuple per level."""
-    sizes = [s for lvl in sizes for s in (lvl if isinstance(lvl, (tuple, list)) else (lvl,))]
     wh, small = _train_wh(long_side)
-    a = np.array([(s / np.sqrt(r), s * np.sqrt(r)) for s in sizes for r in ratios])        # (w, h), r = h / w
-    inter = np.minimum(wh[:, None, 0], a[None, :, 0]) * np.minimum(wh[:, None, 1], a[None, :, 1])
-    best = (inter / (wh[:, 0:1] * wh[:, 1:2] + a[:, 0] * a[:, 1] - inter)).max(1)
+    best = _best_anchor_iou(wh, sizes, ratios)
     return {"median best IoU": np.median(best), "% IoU>=0.5": (best >= .5).mean() * 100, "% IoU>=0.7": (best >= .7).mean() * 100,
             "% IoU>=0.7 (small)": (best[small] >= .7).mean() * 100}
+
+
+def anchor_fit_by_size(configs, edges=(32, 96, 150), ratios=(0.5, 1.0, 2.0), long_side=PREP["long_side"]):
+    """anchor_fit split by box size sqrt(w*h) at the input resolution. configs: {name: sizes} -> DataFrame,
+    rows = size buckets + all boxes (with their share of boxes), columns = (config, median best IoU | % IoU>=0.7)."""
+    wh, _ = _train_wh(long_side)
+    size = np.sqrt(wh[:, 0] * wh[:, 1])
+    bins = np.digitize(size, edges)
+    labels = [f"<{edges[0]}"] + [f"{a}-{b}" for a, b in zip(edges, edges[1:])] + [f">={edges[-1]}"]
+    out = {}
+    for name, sizes in configs.items():
+        best = _best_anchor_iou(wh, sizes, ratios)
+        for i, lab in enumerate(labels + ["all"]):
+            m = bins == i if lab != "all" else np.ones(len(best), bool)
+            out[lab] = {**out.get(lab, {}), ("", "% of boxes"): m.mean() * 100,
+                        (name, "median best IoU"): np.median(best[m]), (name, "% IoU>=0.7"): (best[m] >= .7).mean() * 100}
+    df = pd.DataFrame(out).T
+    df.columns = pd.MultiIndex.from_tuples(df.columns)
+    df.index.name = "box size (px)"
+    return df
 
 
 def match_errors(preds, image_ids, split="val", score_thr=0.3, iou_thr=0.5):
@@ -764,6 +789,7 @@ __all__ = [
     "check_hf_write",
     "draw_frame",
     "anchor_fit",
+    "anchor_fit_by_size",
     "match_errors",
     "error_tables",
     "size_coverage",
