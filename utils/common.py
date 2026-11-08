@@ -322,13 +322,23 @@ def _save_atomic(obj, path):
     tmp.replace(path)
 
 
-def fit(model, train_loader, optimizer, epochs, scheduler=None, eval_fn=None, amp=True, grad_clip=10.0,
+def _optimizer_step(model, optimizer, scaler, grad_clip):
+    if grad_clip:
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+    scaler.step(optimizer); scaler.update()
+    optimizer.zero_grad(set_to_none=True)
+
+
+def fit(model, train_loader, optimizer, epochs, scheduler=None, eval_fn=None, amp=True, grad_clip=10.0, accum_steps=1,
         ckpt_path=None, last_path=None, resume_from=None, logger=None, time_budget_s=None, on_epoch_end=None):
     """Train a torchvision-style detector. eval_fn() -> metrics dict (with 'mAP') runs after every epoch.
     ckpt_path: best weights by val mAP (model only). last_path: full training state written after every epoch
     (model, optimizer, scheduler, AMP scaler, RNG states, history); resume_from: such a file, training continues
     with the next epoch (build the model, optimizer and scheduler exactly as in the first run).
     on_epoch_end(epoch, row) is called after each epoch (after the checkpoints are written), e.g. to push them to the Hub.
+    accum_steps: gradients of this many batches are summed before one optimizer step (effective batch = batch size x accum_steps),
+    for GPUs too small for the full batch; equivalent to the full batch for torchvision detectors (their backbone BatchNorm is frozen).
     Returns history: one dict per epoch with mean losses, validation metrics and elapsed time."""
     model.to(DEVICE)
     use_amp = amp and DEVICE.type == "cuda"
@@ -350,26 +360,29 @@ def fit(model, train_loader, optimizer, epochs, scheduler=None, eval_fn=None, am
     t0 = time.time() - elapsed                                    # elapsed time continues across resumes
     for ep in range(start_ep, epochs + 1):
         model.train()
-        sums, n = defaultdict(float), 0
+        sums, n, pending = defaultdict(float), 0, 0
+        optimizer.zero_grad(set_to_none=True)
         for images, targets in tqdm(train_loader, desc=f"epoch {ep}/{epochs}", leave=False, mininterval=10):
             images = [im.to(DEVICE, non_blocking=True) for im in images]
             targets = [{k: v.to(DEVICE) if torch.is_tensor(v) else v for k, v in t.items()} for t in targets]
             with torch.autocast(DEVICE.type, enabled=use_amp):
                 losses = model(images, targets)
             loss = sum(losses.values())
-            if not torch.isfinite(loss):                          # skip a diverged batch instead of poisoning the weights
+            if not torch.isfinite(loss):                          # skip a diverged batch (and its accumulation group)
                 optimizer.zero_grad(set_to_none=True)
+                pending = 0
                 continue
-            optimizer.zero_grad(set_to_none=True)
-            scaler.scale(loss).backward()
-            if grad_clip:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            scaler.step(optimizer); scaler.update()
+            scaler.scale(loss / accum_steps).backward()
+            pending += 1
+            if pending == accum_steps:
+                _optimizer_step(model, optimizer, scaler, grad_clip)
+                pending = 0
             n += 1
             sums["train_loss"] += loss.item()
             for k, v in losses.items():
                 sums[k] += v.item()
+        if pending:                                               # leftover batches of an incomplete accumulation group
+            _optimizer_step(model, optimizer, scaler, grad_clip)
         row = {"epoch": ep, **{k: v / max(n, 1) for k, v in sums.items()}, "lr": optimizer.param_groups[0]["lr"]}  # lr used in this epoch
         if scheduler:
             scheduler.step()
