@@ -95,6 +95,21 @@ def model_yaml(arch="yolo11s", p2=False):
     return str(MODEL_CFG_DIR / f"{arch}-p2.yaml") if p2 else f"{arch}.yaml"
 
 
+def is_rtdetr(arch):
+    return arch.startswith("rtdetr")
+
+
+def rtdetr_cfg(arch="rtdetr-l", nd=100):
+    """RT-DETR model config (dict) with `nd` denoising queries; the other decoder arguments keep the Ultralytics
+    defaults. Changing nd adds no weights, so the COCO checkpoint still fits (only the class layers are new)."""
+    import ultralytics
+    from ultralytics.utils import YAML
+    cfg = YAML.load(Path(ultralytics.__file__).parent / "cfg" / "models" / "rt-detr" / f"{arch}.yaml")
+    # RTDETRDecoder(nc, hd, nq, ndp, nh, ndl, d_ffn, dropout, act, eval_idx, nd); the channels are inserted by Ultralytics
+    cfg["head"][-1][-1] = ["nc", 256, 300, 4, 8, 6, 1024, 0.0, None, -1, nd]
+    return cfg
+
+
 def nwd(pred, target, c):
     """Normalized Wasserstein Distance similarity (Wang et al., 2021) of xyxy boxes in pixels: each box is a 2D
     Gaussian, W2^2 = |centre difference|^2 + |(w, h) difference|^2 / 4, similarity exp(-W2 / c). Unlike IoU it
@@ -105,11 +120,34 @@ def nwd(pred, target, c):
     return torch.exp(-w2.clamp(min=1e-7).sqrt() / c)
 
 
-def apply_patches(nwd_ratio=0.0, nwd_c=32.0):
-    """Experiment change to the YOLO training loss, applied in the training process before the trainer builds it.
-    nwd_ratio: box loss = (1 - r) * CIoU loss + r * NWD loss (r = 0: Ultralytics default).
-    nwd_c: NWD normalising constant in input pixels (about the median box size, notebook 01)."""
+def apply_patches(nwd_ratio=0.0, nwd_c=32.0, backbone_lr_ratio=1.0):
+    """Experiment changes, applied in the training process before the trainer builds the loss and the optimizer.
+    nwd_ratio: YOLO box loss = (1 - r) * CIoU loss + r * NWD loss (r = 0: Ultralytics default).
+    nwd_c: NWD normalising constant in input pixels (about the median box size, notebook 01).
+    backbone_lr_ratio: learning rate of the backbone layers relative to the rest of the model (1: single rate)."""
+    from ultralytics.engine.trainer import BaseTrainer
     from ultralytics.utils.loss import BboxLoss
+    from ultralytics.utils.torch_utils import unwrap_model
+
+    if backbone_lr_ratio != 1.0:
+        orig_build = BaseTrainer.build_optimizer
+
+        def build_optimizer(self, model, *args, **kwargs):
+            # Split every parameter group of Ultralytics (bias, weight, bn) into its non-backbone and backbone parts
+            optimizer = orig_build(self, model, *args, **kwargs)
+            net = unwrap_model(model)
+            backbone = {id(p) for layer in net.model[:len(net.yaml["backbone"])] for p in layer.parameters()}
+            groups = list(optimizer.param_groups)
+            optimizer.param_groups.clear()
+            for g in groups:
+                rest = [p for p in g["params"] if id(p) not in backbone]
+                back = [p for p in g["params"] if id(p) in backbone]
+                for params, lr in [(rest, g["lr"]), (back, g["lr"] * backbone_lr_ratio)]:
+                    if params:
+                        optimizer.add_param_group({**g, "params": params, "lr": lr})
+            return optimizer
+
+        BaseTrainer.build_optimizer = build_optimizer
 
     if nwd_ratio > 0:
         orig = BboxLoss.forward
@@ -144,19 +182,28 @@ def _history(csv):
 
 
 def _train(cfg):
-    """Body of the training subprocess. cfg: name, data, arch, p2, weights, nwd_ratio, nwd_c, train (Ultralytics
-    train arguments), use_last (keep the last epoch instead of the best one, for runs without a clean val set). Writes best.pt, results.csv, args.yaml and history.json into runs/<name>/."""
-    from ultralytics import YOLO
-    apply_patches(cfg.get("nwd_ratio", 0.0), cfg.get("nwd_c", 32.0))
+    """Body of the training subprocess. cfg: name, data, arch, weights, train (Ultralytics train arguments), use_last
+    (keep the last epoch instead of the best one, for runs without a clean val set); YOLO: p2, nwd_ratio, nwd_c;
+    RT-DETR: nd, backbone_lr_ratio. Writes best.pt, results.csv, args.yaml and history.json into runs/<name>/."""
+    from ultralytics import RTDETR, YOLO
+    from ultralytics.utils import YAML
+    apply_patches(cfg.get("nwd_ratio", 0.0), cfg.get("nwd_c", 32.0), cfg.get("backbone_lr_ratio", 1.0))
+    rtdetr = is_rtdetr(cfg["arch"])
+    model_cls = RTDETR if rtdetr else YOLO
     save = ULTRA_DIR / cfg["name"]
     last = save / "weights" / "last.pt"
     if last.exists():                                            # interrupted run in this session: continue it
         try:
-            YOLO(str(last)).train(resume=True)
+            model_cls(str(last)).train(resume=True)
         except AssertionError as e:                              # already finished, only the copy below is missing
             print(e)
     else:
-        model = YOLO(model_yaml(cfg["arch"], cfg["p2"])).load(cfg["weights"])
+        if rtdetr:                                               # one file per run: two runs may start at the same time
+            yaml = run_dir(cfg["name"]) / "model.yaml"
+            YAML.save(yaml, rtdetr_cfg(cfg["arch"], cfg["nd"]))
+        else:
+            yaml = model_yaml(cfg["arch"], cfg["p2"])
+        model = model_cls(str(yaml)).load(cfg["weights"])
         model.train(data=cfg["data"], project=str(ULTRA_DIR), name=cfg["name"], exist_ok=True,
                     device=0 if torch.cuda.is_available() else "cpu", **cfg["train"])
     d = run_dir(cfg["name"])
@@ -177,6 +224,9 @@ def train_runs(cfgs):
             print(f"{c['name']}: already trained, skipped")
     n_gpus = max(torch.cuda.device_count(), 1)
     ULTRA_DIR.mkdir(parents=True, exist_ok=True)
+    from ultralytics.utils.downloads import attempt_download_asset
+    for w in {c["weights"] for c in todo}:                       # once, before concurrent runs could both start the download
+        attempt_download_asset(str(ULTRA_DIR / w))
     env = {**os.environ, "PYTHONPATH": str(ROOT), "WANDB_MODE": "disabled"}
     for i in range(0, len(todo), n_gpus):
         procs, t0 = [], time.time()
@@ -199,6 +249,48 @@ def train_runs(cfgs):
 
 
 # --------------------------------------------------------------------------------------
+# Speed test (RT-DETR)
+# --------------------------------------------------------------------------------------
+def rtdetr_speed(imgsz, batch=4, nd=100, n_gt=46, iters=30, arch="rtdetr-l"):
+    """Training cost of RT-DETR at a square input on synthetic data (forward, loss with matching, backward, optimizer
+    step; no data loading), run before the real training so that it can set the input size. n_gt: boxes per image.
+    Returns imgsz, ms per image (median, without the first 2 iterations) and peak GPU memory; ms is inf if out of memory."""
+    from ultralytics.nn.tasks import RTDETRDetectionModel
+    use_gpu = DEVICE.type == "cuda"
+    net = RTDETRDetectionModel(rtdetr_cfg(arch, nd), nc=len(CLASSES), verbose=False).to(DEVICE).train()
+    net.nc = len(CLASSES)
+    opt = torch.optim.AdamW(net.parameters(), lr=1e-4)
+    scaler = torch.amp.GradScaler(enabled=use_gpu)
+    g = torch.Generator().manual_seed(SEED)
+    n = batch * n_gt
+    boxes = torch.cat([torch.rand(n, 2, generator=g) * 0.8 + 0.1, torch.rand(n, 2, generator=g) * 0.04 + 0.01], 1)
+    data = dict(img=torch.rand(batch, 3, imgsz, imgsz, generator=g).to(DEVICE), bboxes=boxes.to(DEVICE),
+                cls=torch.randint(0, len(CLASSES), (n, 1), generator=g).float().to(DEVICE),
+                batch_idx=torch.arange(batch).repeat_interleave(n_gt).float().to(DEVICE))
+    times = []
+    try:
+        if use_gpu:
+            torch.cuda.reset_peak_memory_stats()
+        for _ in range(iters):
+            t0 = time.perf_counter()
+            with torch.autocast(DEVICE.type, enabled=use_gpu):
+                loss, _ = net.loss(data)
+            scaler.scale(loss.sum()).backward()
+            scaler.step(opt); scaler.update()
+            opt.zero_grad(set_to_none=True)
+            if use_gpu:
+                torch.cuda.synchronize()
+            times.append(time.perf_counter() - t0)
+        ms = 1000 * float(np.median(times[2:] or times)) / batch
+    except torch.cuda.OutOfMemoryError:
+        ms = float("inf")
+    peak = torch.cuda.max_memory_allocated() / 1e9 if use_gpu else 0.0
+    del net, opt, data
+    torch.cuda.empty_cache()
+    return dict(imgsz=imgsz, ms_per_img=ms, peak_gb=peak)
+
+
+# --------------------------------------------------------------------------------------
 # Inference for the shared COCO evaluation
 # --------------------------------------------------------------------------------------
 def load_ultra(path):
@@ -212,7 +304,9 @@ def load_ultra(path):
 def ultra_predictor(model, imgsz=PREP["long_side"], nms=0.7, half=True):
     """predict_fn for common.predict_dataset: DetDataset images (float RGB in [0, 1], already resized to imgsz on the
     long side) -> boxes in the same pixels, scores and 0-based labels (use label_offset=0). Ultralytics only pads the
-    short side to a multiple of the stride. nms: IoU of the final NMS (Ultralytics default 0.7)."""
+    short side to a multiple of the stride. nms: IoU of the final NMS (Ultralytics default 0.7).
+    RT-DETR: Ultralytics stretches each frame to imgsz x imgsz and there is no NMS (nms is ignored), so the frames must
+    keep at least imgsz on the long side; if they were resized to it first, the height would be upsampled from less."""
     dev = 0 if DEVICE.type == "cuda" else "cpu"
 
     def predict(images):
