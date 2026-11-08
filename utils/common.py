@@ -623,7 +623,10 @@ def _kaggle_cli(*args):
         env.update(kaggle_secrets())
     local = Path(sys.executable).parent / "kaggle"
     exe = str(local) if local.exists() else shutil.which("kaggle") or "kaggle"
-    return subprocess.run([exe, "competitions", *args], env=env, check=True, capture_output=True, text=True).stdout
+    r = subprocess.run([exe, "competitions", *args], env=env, capture_output=True, text=True)
+    if r.returncode:                                              # show the CLI's own message, not only its exit code
+        raise RuntimeError(f"kaggle competitions {args[0]} failed (exit code {r.returncode}):\n{r.stdout}\n{r.stderr}".strip())
+    return r.stdout
 
 
 def kaggle_secrets():
