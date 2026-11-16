@@ -391,10 +391,74 @@ Example frames, ground truth on top and predictions below:
 
 ### 3.4 Query-based: RT-DETR
 
-> - Experiments: separate backbone/transformer LR (`rtdetr_lr`), denoising queries count (`rtdetr_nd200/400`), tuned (`rtdetr_final`).
-> - Bipartite matching removes NMS — 2 sentences, and how it changes training (slower convergence, one-to-one targets).
-> - Plot: val mAP over epochs vs. a CNN detector under the same budget. State whether it converged.
-> - Small objects and dense scenes vs. YOLO.
+Source: [05_query_based.ipynb](notebooks/05_query_based.ipynb)
+
+#### Setup
+
+RT-DETR-L (HGNetv2 backbone, hybrid encoder on P3–P5, 6 decoder layers, 300 queries, 32M parameters), pretrained on COCO. AdamW, lr 1e-4, weight decay 1e-4, nominal batch 16, the same augmentation and 1.1 h budget as YOLO. Ultralytics stretches the input to a square, so the model is trained at 960×960 (the same number of pixels as 1280×720); 1280 px costs 1.6× more per image and would fit fewer epochs. Only 4 epochs fit the budget. Baseline: one learning rate for the whole model, 100 denoising queries.
+
+#### Bipartite matching and NMS
+
+During training the Hungarian algorithm matches every GT box with exactly one query, the one with the lowest cost ($2\,\text{class} + 5\,L_1 + 2\,\text{GIoU}$); all other queries must predict "no object". A second query on the same object is unmatched, so the loss pushes its score down, and through self-attention the queries learn which of them keeps the object. Duplicates are removed by training, so NMS is not needed.
+
+This makes training slower: each object gives one positive (YOLO: up to 10), and the target of a query can change between iterations while the predictions are still poor. Denoising queries help with this: noised copies of the GT boxes are passed to the decoder and must be reconstructed, with a known target and no matching.
+
+#### Experiment 1: separate learning rates
+
+Backbone lr 1e-5 and 1e-4 for the rest, as in the RT-DETR recipe. The pretrained backbone features already work, so a lower rate should protect them while the new layers and the matching settle. mAP increased by 0.014 (0.257 → 0.271), AP_small by 0.017 and AR by 0.055, in the same 4 epochs.
+
+#### Experiment 2: denoising queries
+
+The number of denoising groups is the number of denoising queries divided by the most boxes in an image of the batch. This dataset is much denser than COCO, so with the default 100 queries 83% of batches get only one group and denoising is almost off. I raised it to 200 and 400 (2.5 and 5.4 groups per batch). mAP stayed the same within noise (0.271, 0.269, 0.268); 4 epochs are probably too few to see the faster convergence denoising gives.
+
+#### Final model and comparison
+
+The best training (backbone lr 1e-5, 100 denoising queries) was tested at inputs of 800–1440 px. Unlike YOLO, it gains from a larger input than in training: 0.271 at 960 px, **0.282 at 1280 px**, 0.272 at 1440 px. Adding NMS after the model does not change mAP (0.282 with NMS 0.7) and only lowers AR (0.492 → 0.487).
+
+| model | mAP | AP50 | AP_small | AP_medium | AP_large | AR | ms/img (T4) | public | private |
+|---|---|---|---|---|---|---|---|---|---|
+| Faster R-CNN, tuned | 0.176 | 0.366 | 0.079 | 0.166 | 0.347 | 0.401 | 76 | – | – |
+| RetinaNet, tuned | 0.146 | 0.289 | 0.058 | 0.135 | 0.289 | 0.338 | 57 | – | – |
+| YOLO11s, tuned | 0.207 | 0.398 | 0.102 | 0.194 | 0.334 | 0.307 | **41** | 0.2145 | 0.1757 |
+| RT-DETR baseline, 960 px | 0.257 | 0.501 | 0.127 | 0.223 | 0.433 | 0.407 | 82 | – | – |
+| backbone lr 1e-5, 960 px | 0.271 | 0.517 | **0.144** | 0.230 | 0.460 | 0.462 | 84 | – | – |
+| denoising 200, 960 px | 0.269 | 0.515 | 0.142 | 0.233 | 0.453 | 0.440 | 83 | – | – |
+| denoising 400, 960 px | 0.268 | 0.511 | 0.131 | 0.228 | 0.464 | 0.455 | 83 | – | – |
+| **RT-DETR final, 1280 px** | **0.282** | **0.533** | 0.137 | **0.241** | **0.479** | **0.492** | 105 | **0.2590** | **0.2558** |
+
+![Val mAP of RT-DETR and YOLO11s under the same budget](images/rtdetr_training.png)
+
+RT-DETR is the best model so far, better at every object size and with much higher recall. It is also 3.5× larger and 2.6× slower than YOLO11s, so part of the gap comes from the model size. It is ahead of YOLO from the first epoch, but **it has not converged**: in every run the best epoch is the last one and mAP was still rising, while YOLO levelled off near 0.21.
+
+#### Small objects and dense scenes
+
+RT-DETR finds 61% of small objects (YOLO11s 39%, Faster R-CNN 53%), so its AP_small gain comes from fewer misses. It is also ahead in every density group, including frames with more than 100 objects (mAP 0.334 vs 0.277), and 300 queries are enough for 180 objects per frame. Matching does not remove all duplicates (2.0% of detections, YOLO with NMS 0.4%), but they have low scores, which is why NMS does not help.
+
+#### Failure cases
+
+At $\text{score} \ge 0.3$ and $\text{IoU} \ge 0.5$:
+
+1. **Small objects are mislocalized:** 56% correct, but only 18% missed and 20% mislocalized; a few pixels give little signal for the box regression.
+2. **Occlusion:** 57% of heavily occluded objects are missed, still the largest error (YOLO 71%).
+3. **Many false positives:** 30% of detections are on background and 12% in ignore regions (YOLO 16% and 5%). It outputs 66 boxes per image against 31, so part of them are probably unlabeled objects.
+
+The confusion matrix shows that this model partly fixes the classification of buses and bicycles: 40% of detected buses and 71% of bicycles are classified correctly, against 9% and 36% for Faster R-CNN. The same confusions remain, only smaller: van → car (28%), bicycle → motor (16%) and bus → van (52%).
+
+![Confusion matrix of the final model](images/rtdetr_confusion.png)
+
+Example frames, ground truth on top and predictions below:
+
+![Missed small objects](images/rtdetr_fail_missed_small.jpg)
+
+*A night frame: some distant objects are missed.*
+
+![Class confusions](images/rtdetr_fail_confused.jpg)
+
+*Most bicycles are classified as motors.*
+
+![Background false positives](images/rtdetr_fail_background.jpg)
+
+*Most "false positives" are real objects: riders on motors are detected as persons while the GT has only the motor box, and parked cars that have no labels are detected.*
 
 ### 3.5 Comparison of all models
 
