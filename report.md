@@ -460,20 +460,22 @@ Example frames, ground truth on top and predictions below:
 
 *Most "false positives" are real objects: riders on motors are detected as persons while the GT has only the motor box, and parked cars that have no labels are detected.*
 
-### 3.5 Comparison of all models
-
-> - One summary table: every tuned model (+ baselines in gray or separate rows): mAP, AP50, AP_s, AP_m, AP_l, FPS, public LB.
-> - 3–4 sentences: which family wins on this data and why (small objects, density), the speed/accuracy trade-off, and which models go into the final pipeline.
-
 ## 4. Final pipeline
-
-> **Contains:** must clearly separate "data/inference changes" from "model changes" (graded separately). Keep the same validation as above.
 
 ### 4.1 Data and inference strategy
 
-> Source: `notebooks/final_pipeline/01_data_tests.ipynb`.
-> - Table: reference vs. masked ignore regions (`s1_ignore`), low-resolution simulation (`s1_lowres`), less mosaic (`s1_mosaic`), tile-based training (`s1_tile`) — val mAP and public LB.
-> - Which changes helped, which did not, and a likely reason for each.
+Source: `notebooks/final_pipeline/01_data_tests.ipynb`.
+
+For the data and inference changes for the final pipeline i descided to do 4 next trials:
+
+- **Mask ignored regions.** Mostly there is no labels in the ignore regions and predictions there do not impact scores so models learns the objects there as the background. To fix this I descided to paint all ignored regions grey for all train frames.
+- **Low-resolution simmulation.** As it was found in the ([section number]) there are low resolution frames in the test but train and val lacks them. To handle this I descided to downsample to the 680ps or 960px 20% frames from train and val (for metrics) and then enlarge them back (some details were lost).
+- **Less mosaic.** use mosaic agmentation on half of the images instead of all, such that models can see normal frames too
+- **Tile-base model** this is the separate model which uses 1920px input frames, then crops them to [N] 960px frames and then makes separate predictions for each smaller frame and then combines them. It can help with the detection of the small objects.
+
+Results:
+[table from the notebook]
+
 
 ### 4.2 Model changes
 
