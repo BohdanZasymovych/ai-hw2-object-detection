@@ -316,50 +316,78 @@ Example frames, ground truth on top and predictions below:
 
 ### 3.3 One-stage anchor-free: YOLO11
 
-[copy training setup from the notebook]
+Source: [04_one_stage_anchor_free.ipynb](notebooks/04_one_stage_anchor_free.ipynb)
 
-[copy baseline results from the notebook]
+#### Setup
 
+YOLO11s, pretrained on COCO, new 8-class head; DFL + CIoU box loss, BCE classification. AdamW, lr 0.001, nominal batch 64, Ultralytics augmentation (mosaic off for the last 2 epochs), 1280 px. The 1.1 h budget fits 9 epochs (Faster R-CNN: 3). Baseline: levels P3–P5, CIoU, NMS 0.7.
 
-Experiment 1 p2 head
+#### How locations are assigned without anchors
 
-From the data analysis it was found that there are a lot of small object and previous models struggled with them. So to handle this with YOLOv11 model i descided to add P2 head with stride 2 in addidition to the P3-P7 heads with strides 2^3 - 2^7. The feature map outputed from this head will have higher reoslution 640x640 and will preserve more details what is crucial for predicting small objects. But this increase training and inference time
+Each feature-map cell is a point that predicts the distances to the 4 box sides and 8 class scores. During training, the task-aligned assigner (TAL) takes the points inside a GT box as candidates and makes the top 10 by $t = \text{score}^{0.5} \cdot \text{CIoU}^{6}$ positives, so positives follow the current predictions instead of fixed anchor shapes. Measured on train frames:
 
-P2 head improved slightly AP_small (+0.014) but overall it performed worse: mAP decreased by 0.007. Likely it happend because to keep the same time budget for all models model was trained on only 5 epochs and training hasnt stoped. It may outperform baseline model with more epochs.
+| GT box size | candidate points | on the object |
+|---|---|---|
+| tiny ($< 16$ px), P3–P5 | 5.8 | 59% |
+| small (16–32 px), P3–P5 | 12.4 | 97% |
+| tiny ($< 16$ px), P2–P5 | 14.2 | 97% |
 
+Tiny boxes have fewer candidates than the top 10, so all of them become positives, including those off the object, and in dense scenes neighbours compete for the same points (10% of tiny boxes share all of them).
 
-Experiment 2 NWD loss
+#### Experiment 1: P2 level
 
-IoU based losses are sensitive to small shifts for small objects (dataset has a lot of them). So I tried to chagne loss function from IoU to Normalized Wasserstein Distance (NWD). models each box as a 2D Gaussian and compares them with the Wasserstein distance, $\text{NWD} = \exp(-W_2 / C)$: it depends on the absolute pixel offset, not on the box size, and stays informative without overlap. $C = 32$ px is the median box size at 1280 px. The box loss becomes $0.5\,(1 - \text{CIoU}) + 0.5\,(1 - \text{NWD})$, keeping CIoU's scale invariance for larger boxes; the assigner still uses CIoU.
+Previous models struggled with small objects, so I added a P2 level (stride 4) to the default P3–P5 (strides 8, 16, 32). Its feature map (320×180 for a 1280×720 frame) preserves more detail and gives tiny boxes 2.4× more candidates (table above), but increases training time.
 
-It slightly decreased the mAP, by 0.09.
+P2 improved AP_small (+0.014) and AR (+0.029), but mAP decreased by 0.007. Within the same time budget it reached only 5 epochs (baseline 9), and at epoch 5 both were level, so it may outperform the baseline with more epochs.
 
-Final tuning: additionally the best model (baseline) was tuned by grid searc hby searching different input resoltions and  NMS IoU thresholds. 
+#### Experiment 2: NWD loss
 
-The best results was for the default image size 1280 model was trained on and for NMS 0.6.
+IoU-based losses are very sensitive to small shifts of small objects. Normalized Wasserstein Distance models each box as a 2D Gaussian: $\text{NWD} = \exp(-W_2 / C)$ depends on the absolute pixel offset, not the box size, and stays informative without overlap. With $C = 32$ px (the median box size), the box loss becomes $0.5\,(1 - \text{CIoU}) + 0.5\,(1 - \text{NWD})$.
 
-[add table with comparison of previous models and experiments here]
+It decreased mAP by 0.011, and its val mAP peaked at epoch 5 and then fell. A likely cause: with $C = 32$, a 2 px shift gives NWD 0.92 at any box size, so half of the loss barely pushes for exact localization.
 
-[add trainning curves]
+#### Final model and comparison
 
-Failure cases:
-- Same issue with the bycicle and bus
+The best model (baseline) was tuned at test time over the input size (1280, 1536, 1920 px) and NMS IoU (0.6, 0.7). NMS changed mAP by at most 0.001. Higher resolution trades large objects for small ones: 1536 px raised AP_small (0.102 → 0.110) at equal mAP, and 1920 px lost large objects (AP_large 0.334 → 0.287), since the model was trained at 1280 px. **Selected: 1280 px, NMS 0.6.**
 
-[add confussion matrix]
+| model | mAP | AP50 | AP_small | AP_medium | AP_large | ms/img (T4) | public | private |
+|---|---|---|---|---|---|---|---|---|
+| Faster R-CNN, tuned | 0.176 | 0.366 | 0.079 | 0.166 | **0.347** | 76 | – | – |
+| RetinaNet, tuned | 0.146 | 0.289 | 0.058 | 0.135 | 0.289 | 57 | – | – |
+| YOLO11s baseline | 0.206 | 0.393 | 0.102 | 0.193 | 0.334 | 40 | – | – |
+| P2 level | 0.199 | 0.386 | **0.116** | 0.179 | 0.366 | 41 | – | – |
+| NWD loss | 0.195 | 0.384 | 0.104 | **0.194** | 0.308 | 41 | – | – |
+| **YOLO11s final** | **0.207** | **0.398** | 0.102 | **0.194** | 0.334 | 41 | 0.2145 | 0.1757 |
 
-[add 3 images]
+![Val mAP per epoch and per training minute](images/yolo_training.png)
 
-- 1: model missed a lot of small and far objects on the picture
-- 2: missed distant cars, perplexed bycicles and motors
-- 3: Here the model performed quite well but the GT was bad, most motors doesnt have person labeled on them but model correctly classified people; there are some boxes in the GT on the background
+The curves show Ultralytics' own val mAP, which is not comparable with 3.1–3.2.
 
-How locations are assigned without anchors.
+YOLO11s is the best and fastest model so far, ahead on small and medium objects; Faster R-CNN stays slightly ahead on large ones. Faster R-CNN still finds more objects (AR 0.401 vs 0.307), so YOLO wins by better localization (AP75 0.186 vs 0.151), not recall. Part of the gap may come from 9 vs 3 epochs.
 
-YOLO v11 ppredicts one box per each feature cell in the feature map. Prediction contains size of the box with center in the current cell and confidence for each class. Then the boxes are filterd: ones with confidences for every class lower than some threshold are dropped, then NMS is used and then only top k boxes with largest confidences are used, the class for each box is choosen as one that has the highest confidence
+#### Failure cases
 
-> - How locations are assigned without anchors (task-aligned assigner), effect on small/dense objects.
-> - Experiments: P2 high-resolution head (`yolo_p2`), NWD box loss (`yolo_loss`), tuned test-time resolution × NMS IoU (`yolo_final`). State the search range and the selected values.
-> - Comparison with tuned anchor-based models broken down by object size (AP_s/AP_m/AP_l). First public LB score.
+At $\text{score} \ge 0.3$ and $\text{IoU} \ge 0.5$:
+
+1. **Small objects are missed:** 35% correct (45% missed), between Faster R-CNN (46%) and RetinaNet (28%).
+2. **Similar classes are confused:** van → car (54% of detected vans), bicycle → motor (41%), bus → car (55 of 69).
+3. **Background false positives:** 16% of detections; duplicates are almost absent (0.4%).
+
+![Confusion matrix of the final model](images/yolo_confusion.png)
+
+Example frames, ground truth on top and predictions below:
+
+![Missed small objects](images/yolo_fail_missed_small.jpg)
+
+*Many small and distant objects are missed; some GT boxes lie on foliage with no visible object (as in [1.3](#13-label-quality)).*
+
+![Class confusions](images/yolo_fail_confused.jpg)
+
+*Distant cars are missed, and bicycles are classified as motors.*
+
+![Background false positives](images/yolo_fail_background.jpg)
+
+*The model performs well, but the GT is poor: most riders on motors are not labeled as persons, while the model detects them, and some GT boxes are on the background.*
 
 ### 3.4 Query-based: RT-DETR
 
