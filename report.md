@@ -119,11 +119,7 @@ I keep every 3rd frame (8,090 train / 951 val frames), a balance between trainin
 | targets | 8 classes; ignore regions are not targets and stay in the evaluation ground truth as `iscrowd` |
 | reproducibility | seed 42 for python, numpy, torch and the data loaders |
 
-### 1.10 Cross-validation
-
-Cross-validation is not used: K-fold CV would multiply the training time by about K, and neither my local GPU (RTX 2050, 4 GB) nor Kaggle's 30 h weekly GPU limit allows that. All models are trained once on the same video-level split with the same seed, so results are comparable, but differences of a few thousandths of mAP are within noise.
-
-### 1.11 Summary
+### 1.10 Summary
 
 - **Small objects:** 54% of boxes are under 32 px → 1280 px input, anchors from 13 px, high-resolution feature levels.
 - **Dense scenes:** up to 180 objects per frame → at least 300 detections / queries per image.
@@ -134,11 +130,10 @@ Cross-validation is not used: K-fold CV would multiply the training time by abou
 
 ## 2. Validation protocol
 
-> **Contains:** short and precise, this is the base every comparison relies on.
-> - Split by sequence (GroupKFold / fixed sequence-level split), no frame leakage; explain if a single fold is used instead of full CV because of compute budget and why that is acceptable.
-> - Metric: COCO mAP@[.5:.95], AP50, AP_small/medium/large via pycocotools/faster-coco-eval, ignored regions as crowd.
-> - Fixed training budget for the required comparisons (epochs / image size / batch / GPU) and how inference speed is measured (hardware, batch size, FPS or ms/img).
-> - How the public LB relates to val (does val ranking agree with LB?).
+- **Split:** the provided video-level split (56 train / 7 val videos), every 3rd frame, the same for all models.
+- **No cross-validation:** K-fold CV would multiply training time by about K, which neither my local GPU (RTX 2050, 4 GB) nor Kaggle's 30 h weekly GPU limit allows. All models use the same split and seed (42), so results are comparable, but differences of a few thousandths of mAP are within noise.
+- **Metrics:** COCO mAP@[.5:.95], AP50, AP_small / medium / large and AR (pycocotools), up to 300 detections per image; ignore regions stay in the ground truth as `iscrowd`.
+- **Budget:** each required detector is trained from COCO-pretrained weights for about 1–1.5 h on a Kaggle T4, and its experiments keep the same budget. The input is 1280 px, except RT-DETR, which trains at 960 px because a 1280 px input costs 1.6x more per image.
 
 ## 3. Detector families
 
