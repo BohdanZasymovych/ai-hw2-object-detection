@@ -236,6 +236,49 @@ Example frames, ground truth on top and predictions below:
 
 ### 3.2 One-stage anchor-based: RetinaNet
 
+[copy the train setup from the notebook with the same style as in 3.1]
+
+[fill the baseline model with the same data as in the 3.1]
+
+Experiments 1 - anchor sizes
+
+For this model the experiment with the anchor size was also made. Here because of how RetinaNet built it was descided to use anchor sizes starting from 13 and then doubling the value untill 208, then on each level of the FPN the anchors are multiplied by the (1, 2^(1/3), 2^(2/3)) and we are getting 3 sizes of the anchor. 
+
+IoU fit (described in the 3.1) showed here increase for all sizes of the objects but the metrics decreased as too (by [N] comparing with the baseline)
+
+[place table with IOU fot from the notebook]
+
+Experiment 2
+
+During training every anchor is labelled by its best IoU with a GT box: positive (learns the class and the box) if IoU ≥ the foreground threshold, background if IoU < the background threshold, ignored in between. Small boxes rarely reach IoU 0.5 with any anchor, so they get few positives. Lowering the thresholds to 0.4/0.3 gives them more positives
+
+For the lower thresholds the mAP decreased by [N] comparig with the baseline. Likelly it is because now more lose boxes gice more positives for the image, but this positives are not confident.
+
+Additionaly NMS was tuned, 0.5 and 0.6 were compared and the 0.5 gave slightly better results.
+
+The final model was [put name and parameters]
+
+[put results table with r cnn and experiments]
+
+[put train plot]
+
+What removing the proposal stage costs
+
+Without the proposal stage there is only one refinement of the boxes so the localization depends only one head. Because of this objects with sizes out of bounds of the sizes of the the anchors are classified poorelly, since the box for them is very rough because there is only one refinement of the anchor. On the other hand removing the first proposal stage makes inference and training faster since there are less computations
+
+Faillures:
+
+The model has the same confussion issues as two-stage - bicicles and busses are classified wery poorelly.
+
+[add confussion matrix]
+
+- First frame has issues with predicting small objects, a lot of them are missed
+- Scond frame has almost all bicicless missed and only human on it was classified
+- Third frame has a few same predictions for some objects
+
+[add 3 images]
+ 
+
 > - Experiments: anchor sizes grounded in the size statistics from section 1 (`retina_anchors`), IoU thresholds of anchor assignment (`retina_iou`), tuned (`retina_final`).
 > - Does removing the proposal stage cause issues: foreground/background imbalance, handled by focal loss; what you saw in practice.
 > - Comparison initial vs. tuned vs. tuned Faster R-CNN.
