@@ -564,3 +564,14 @@ First set `HF_REPO` in `utils/common.py` to your own Hugging Face repo and add a
 4. `final_pipeline/03_final_models`: `ENSEMBLES = ["1280 + 960 + YOLO11s + tile"]` predicts the test frames, applies WBF and writes the CSV; `SUBMIT = True` also submits it.
 
 Finished stages are uploaded to the Hugging Face repo, so each notebook can run in a separate session. To regenerate only the submitted CSV without training, run step 4 alone: the members' test predictions are downloaded from the repo.
+
+
+## 6. AI usage
+
+In this homework AI was used for the next things:
+- Code generation
+- Suggestions for choosing models, parameters
+- Assistance in writing report:
+    - Text formating
+    - Miving tables and images from the notebooks to the report
+    - Creating structure of the report
