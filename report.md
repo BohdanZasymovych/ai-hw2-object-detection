@@ -491,6 +491,13 @@ Val and the leaderboard disagree here, and the differences are small, so I kept 
 
 ### 4.2 Model changes
 
+From the training curves for the RT-DETR-L it was seen that they still improve when training ends. In this section i descided to give it enough epochs to train ([write number]) to see their real performance. Also i tried two input sizes of the images 960px and 1280px for both models.
+
+[comparison table of 2 models and tunned rt detr l]
+
+[training curves]
+
+The best results were achived at epoch 7, then model performance started to decrease due to overfitting. both models showed better results than the baseline and the model with higher input resolution was better
 
 ### 4.3 Ensembles and final selection
 
