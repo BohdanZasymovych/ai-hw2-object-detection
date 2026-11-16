@@ -12,53 +12,125 @@ The task is detecting 8 object classes in video frames, scored by COCO mAP. Most
 
 ## 1. Data understanding and preprocessing
 
-Source: ![01_data_analysis.ipynb](notebooks/01_data_analysis.ipynb)
+Source: [01_data_analysis.ipynb](notebooks/01_data_analysis.ipynb)
 
-The dataset contains videos and labels for them with [N] classes and ignore areas. It is split into train ([N] videos), validation ([N] videos) and test. This split is kept the same for all models they are trained on the trains and val is used only for their validation and metrics, test is not labeled and is used for scoring on kaggle (only final models were trained on both train and val and then submitted). The dataset also has ignored regions during training boxes in them are jsut removed and during validation any detection in this regions doesnt count as mistake. Validation dataset is not very representable since it contains only 7 videos and additionaly class distribution is unbalanced
+### 1.1 Dataset and split
 
-Sample frames with labels:
+The dataset contains drone videos with box labels for 8 classes (person, bicycle, car, van, truck, tricycle, bus, motor) and ignore regions. It is split by video, so no video appears in two splits.
 
-[add 2 frames, the ones for which i noted incorrect labels]
+| split | videos | frames | boxes |
+|---|---|---|---|
+| train | 56 | 24,201 | 1,105,516 |
+| val | 7 | 2,846 | 114,132 |
+| test | 48 | 3,811 | hidden |
 
-The dataset (both train and val splits) is unbalanced, it contains much more images of the person, car and motor then of all other classes, especially bus, it is absent from 32 out of 56 train sequences. [add share of the classes in the parenthesis to the text above]
+All models are trained on train, and val is used only for validation and metrics. Test is unlabeled and scored on Kaggle; only the final models were trained on train + val. The validation set is not very representative: it has only 7 videos and a different class mix (1.4), so per-class metrics on val are noisy.
 
-[put plot with class share]
+### 1.2 Ignore regions
 
+Ignore regions are areas where objects are not labeled. In training they are not used as targets; in validation, a detection inside them does not count as a mistake. 75% of train frames have at least one ignore region, but only 1.1% of boxes lie inside one, so objects there are mostly not annotated at all.
 
-Image resolution and object sizes:
+### 1.3 Label quality
 
-dataset contains images of different resolutions from 680x382 to 3840x2160. Train has most images with medium resolution (1344x756 - 1920x1080), val has with higher (1904x1071 - 3840x2160) and test with lower (680x382 - 1360x764)
-and val has approximatelly the same distribution of resolutions while test has more low resolution images and no images of resolution higher than 1920x1080.
+Some frames have unlabeled objects. In the val frame below, not all cars in the parking lot (top right) are labeled. There are also incorrect labels, for example tricycle and motor boxes on the tree canopy.
 
-Most object are small [share %] and medium [share %] size (COCO bucket at 1280, [put exact pizel sizes]). By classes person, bicicle and motor are mostly small, car, van, truck, tricicle are mostly medium and bus is mostly medium and big. The median size of the object per sequence varies from 18 to 58px
+![Val frame #127 of uav0000182_00000_v: unlabeled parked cars and boxes on the tree canopy](images/missing_labels.jpg)
 
-For the training and inference models must get images of the fixed size. To descide on this size i checked the share of the objects which long sise will be <16px after resizing (very hard to clasify). Descided to use resolution of 1280 (long side) since for it share is 9.8% and for 960 its 24% so 1280 is good midleground between training/inference time and model performance
+One train frame has many incorrect labels: in the bottom right corner of #322 there are many boxes with no object inside, while its neighbours in the video do not have them (180 boxes against 100 in #321 and 88 in #323).
 
-[put tables with percent of the boxes of the sizes and with percent of each size in each class]
+![Two consecutive train frames: #321 and #322 of uav0000295_02300_v](images/sample_frames.jpg)
 
-Since some models which were used are anchor based models which uses anchors with a few predefined box sizes for the predictions and then refines size I descided to to try to find a few best sizes. To do so i runned k-means (with k = 3, 5, 9) on the box sizes, I got next sizes which are used later for the training.
+### 1.4 Class distribution
 
-[put table with anchor sizes]
+The dataset is unbalanced: car (46% of train), person (30%) and motor (9%) dominate, the other classes have 3–4% each, and bus only 0.9%; it is absent from 32 of the 56 train videos. Val has a different mix: more person (44%), less car (28%) and only 264 buses (0.2%).
 
-Scene density:
+![Boxes per class and class share per video](images/class_distribution.png)
 
-it was found that most scenes are quite dense and contain a lot of object. Mean number of object varies from 5 to 143 accross sequences
+### 1.5 Image resolution and object sizes
 
-[put table from 2.6 scene density and leave only mean, median and percent of the frames with > 100 objects]
+Resolutions range from 680x382 to 3840x2160. Most train images are medium-sized (53% are 1904x1071), val has more high-resolution ones (34% are 3840x2160), and test has none above 1920x1080 but 16% low-resolution ones (680x382, 960x540) that train and val lack.
 
+Most objects are small (54%) or medium (43%), measured as $\sqrt{w \cdot h}$ at a 1280 px long side with the COCO buckets (small < 32 px, large > 96 px). Person, bicycle and motor are mostly small, car, van, truck and tricycle mostly medium, and bus medium and large. The median object size per video varies from 18 to 58 px.
 
-Temporal redundancy:
+| % of boxes | small | medium | large |
+|---|---|---|---|
+| **all classes** | **54** | **43** | **3** |
+| person | 73 | 27 | 0 |
+| bicycle | 70 | 30 | 0 |
+| car | 42 | 53 | 4 |
+| van | 44 | 51 | 5 |
+| truck | 26 | 59 | 14 |
+| tricycle | 36 | 60 | 4 |
+| bus | 13 | 55 | 32 |
+| motor | 70 | 29 | 0 |
 
-To check whether there is temporal redundancy in the frames (framerate is high and a few frames in the sequence are almost the same) because there are almost dublicating frames they almost do not contribute to the model performance but they slow training time. I tried different gap (k) of frames and find the median IoU of the same boxe k frames appart. From the finding i descided to leave only every 3-rd frame since it povides balance between number of the frames left in the dataset which impacts train time and removing too many frames and losing information.
+To choose the input size, I checked the share of objects below 16 px after resizing, since these are very hard to detect. I chose a 1280 px long side (9.8%, against 24% at 960 px) as a middle ground between training/inference time and performance.
 
-[put table from section 2.7]
+| long side, px | 640 | 960 | **1280** | 1920 |
+|---|---|---|---|---|
+| % of boxes < 16 px | 54.2 | 24.0 | **9.8** | 1.7 |
 
-Cross validation:
-Cross-validation is not used. K-fold CV would multiply the training time by approximatelly K, and neither my local GPU (RTX 2050; 4GB VRAM) nor Kaggle's 30 h weekly GPU limit is enough to train every model K times. All models are instead trained once on the same sequence-level train/val split with the same seed, so results are comparable, but differences of a few thousandths of mAP are within noise (the val set has only 7 videos).
+### 1.6 Anchor sizes and shapes
 
-Summary:
+Anchor-based models (Faster R-CNN, RetinaNet) predict boxes relative to a few predefined anchor sizes and shapes. To find good sizes, I ran k-means (k = 3, 5, 9) on the box widths and heights at 1280 px:
 
-[add short list of the conclussions, main descisions]
+| k | mean best IoU | anchors (w x h, px) |
+|---|---|---|
+| 3 | 0.60 | 15x21, 32x32, 75x58 |
+| 5 | 0.66 | 13x18, 19x34, 32x23, 44x41, 92x66 |
+| 9 | 0.73 | 11x15, 13x28, 22x19, 20x39, 40x22, 30x31, 39x53, 63x34, 100x72 |
+
+These shapes only show the useful size range, about 13–100 px, far below the 32–512 px default. torchvision takes one anchor size per feature-pyramid level combined with fixed aspect ratios, so the training sizes come from a 1D k-means (k = 5, log scale) of $\sqrt{w \cdot h}$: 13/21/31/48/87 px for Faster R-CNN, and 13/26/52/104/208 px for RetinaNet (the smallest size, doubled per level like the stride). The aspect ratios stay at the default {0.5, 1, 2}, since they cover the box ratios h/w:
+
+| percentile | 10th | 50th | 90th |
+|---|---|---|---|
+| h / w | 0.47 | 1.06 | 2.25 |
+
+### 1.7 Scene density
+
+Most scenes are dense. The mean number of objects per frame varies from 5 to 143 across videos, and the densest frame has 180, so a model must output at least 300 detections (or DETR queries) per image.
+
+| | train | val |
+|---|---|---|
+| mean objects per frame | 45.7 | 40.1 |
+| median | 43 | 37 |
+| frames with > 100 objects | 7.6% | 6.4% |
+
+### 1.8 Temporal redundancy
+
+The frame rate is high, so consecutive frames are near-duplicates: they add little to performance but slow down training. I measured the median IoU of the same object k frames apart:
+
+| frame gap k | 1 | 2 | **3** | 5 | 10 |
+|---|---|---|---|---|---|
+| median IoU of the same object | 0.90 | 0.81 | **0.73** | 0.60 | 0.36 |
+| % of objects with IoU > 0.5 | 96 | 86 | **75** | 59 | 39 |
+
+I keep every 3rd frame (8,090 train / 951 val frames), a balance between training time and losing information.
+
+### 1.9 Preprocessing
+
+| step | setting |
+|---|---|
+| frames | every 3rd frame of each video |
+| resize | long side 1280 px, aspect ratio kept |
+| normalisation | pixels scaled to [0, 1]; mean/std are applied inside each model |
+| training augmentation | horizontal flip (p = 0.5), scale jitter 0.75–1.25, colour jitter 0.2 (YOLO and RT-DETR: Ultralytics' built-in augmentation) |
+| val / test | resize only |
+| targets | 8 classes; ignore regions are not targets and stay in the evaluation ground truth as `iscrowd` |
+| reproducibility | seed 42 for python, numpy, torch and the data loaders |
+
+### 1.10 Cross-validation
+
+Cross-validation is not used: K-fold CV would multiply the training time by about K, and neither my local GPU (RTX 2050, 4 GB) nor Kaggle's 30 h weekly GPU limit allows that. All models are trained once on the same video-level split with the same seed, so results are comparable, but differences of a few thousandths of mAP are within noise.
+
+### 1.11 Summary
+
+- **Small objects:** 54% of boxes are under 32 px → 1280 px input, anchors from 13 px, high-resolution feature levels.
+- **Dense scenes:** up to 180 objects per frame → at least 300 detections / queries per image.
+- **Class imbalance:** car and person are 76% of boxes, bus under 1% → rare-class AP is noisy.
+- **Noisy labels:** unlabeled objects and some false boxes cap the achievable mAP.
+- **Near-duplicate frames:** every 3rd frame is kept, 3x faster training.
+- **Val differs from test:** 4K frames only in val, low-resolution frames only in test → addressed in the final pipeline (section 4).
 
 ## 2. Validation protocol
 
