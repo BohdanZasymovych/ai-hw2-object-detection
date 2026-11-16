@@ -507,10 +507,28 @@ Both models are better than the baseline, and the higher input resolution is bet
 
 ### 4.3 Ensembles and final selection
 
-> Source: `notebooks/final_pipeline/03_final_models.ipynb`.
-> - WBF ensemble options (1280 + 960 + YOLO11s + tile) — table with val mAP and public LB.
-> - Retraining on train + val: why it is allowed now (hyperparameters already fixed) and what changed.
-> - The two submissions selected for the private LB and why (internal val, not only public LB).
+Source: [final_pipeline/03_final_models.ipynb](notebooks/final_pipeline/03_final_models.ipynb)
+
+The models have different errors (RT-DETR has much higher recall than YOLO, the tile model is better on small objects), so I combined them with Weighted Boxes Fusion (WBF). WBF averages overlapping boxes of the same class from several models, weighted by score, and ranks boxes found by several models higher. All ensembles contain the 1280 px long run, the strongest single model.
+
+| ensemble (train only) | val mAP | AP_small | test-like mAP | public | private |
+|---|---|---|---|---|---|
+| 1280 alone | 0.306 | 0.149 | 0.310 | 0.3290 | 0.2763 |
+| 1280 + 960 | 0.311 | 0.150 | 0.313 | – | – |
+| 1280 + 960 + YOLO11s | 0.323 | 0.166 | 0.330 | **0.3333** | 0.2801 |
+| 1280 + 960 + tile | 0.330 | 0.164 | 0.335 | 0.3146 | 0.2841 |
+| 1280 + YOLO11s + tile | 0.332 | 0.170 | 0.344 | 0.3224 | 0.2835 |
+| **1280 + 960 + YOLO11s + tile** | **0.337** | **0.174** | **0.347** | 0.3290 | **0.2871** |
+| 1280 + 960 + YOLO11s, train + val | – | – | – | 0.3037 | 0.2845 |
+
+Every added model improves val, and the tile model gives the largest gain (+0.019 alone). On the public leaderboard the ranking is different: the best ensemble there has no tile model.
+
+Finally, I retrained the 1280 px, 960 px and YOLO11s models on train + val with the same settings and a fixed number of epochs (8, 8 and 9, close to the best epochs found before), since all hyperparameters were already chosen. This version cannot be scored on val. On the leaderboard it was slightly better on private (0.2845 vs 0.2801) but worse on public (0.3037 vs 0.3333), so the gain from the extra data is small.
+
+**Selected models:**
+
+- **1280 + 960 + YOLO11s + tile (train only):** the best ensemble on val and on test-like val (0.337 / 0.347), the main criterion.
+- **1280 + 960 + YOLO11s (train only):** the best public score (0.3333) and the best on val among the ensembles without the tile model.
 
 ### 4.4 Unsuccessful attempts
 
