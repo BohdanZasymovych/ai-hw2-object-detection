@@ -464,24 +464,33 @@ Example frames, ground truth on top and predictions below:
 
 ### 4.1 Data and inference strategy
 
-Source: `notebooks/final_pipeline/01_data_tests.ipynb`.
+Source: [final_pipeline/01_data_tests.ipynb](notebooks/final_pipeline/01_data_tests.ipynb)
 
-For the data and inference changes for the final pipeline i descided to do 4 next trials:
+All tests start from the best RT-DETR training (backbone lr 1e-5, 960 px, 1.1 h) and change one thing at a time. Besides val mAP I report **test-like mAP**, val without the frames wider than 1920 px, which the test set does not have. I tried four changes:
 
-- **Mask ignored regions.** Mostly there is no labels in the ignore regions and predictions there do not impact scores so models learns the objects there as the background. To fix this I descided to paint all ignored regions grey for all train frames.
-- **Low-resolution simmulation.** As it was found in the ([section number]) there are low resolution frames in the test but train and val lacks them. To handle this I descided to downsample to the 680ps or 960px 20% frames from train and val (for metrics) and then enlarge them back (some details were lost).
-- **Less mosaic.** use mosaic agmentation on half of the images instead of all, such that models can see normal frames too
-- **Tile-base model** this is the separate model which uses 1920px input frames, then crops them to [N] 960px frames and then makes separate predictions for each smaller frame and then combines them. It can help with the detection of the small objects.
+- **Masked ignore regions.** Objects inside ignore regions are mostly not labeled, so the model learns them as background. I painted the ignore regions grey in all train frames.
+- **Low-resolution simulation.** The test set has low-resolution frames that train and val lack ([1.5](#15-image-resolution-and-object-sizes)). I downscaled 20% of the train frames to 680 or 960 px and enlarged them back, so some detail is lost. To measure it, val frames were degraded the same way.
+- **Less mosaic.** Mosaic augmentation on half of the images instead of all, so the model also sees normal frames.
+- **Tile-based model.** A separate model: frames are resized to 1920 px and cut into 6 overlapping 960 px tiles; each tile is predicted separately and the predictions are merged with NMS. Objects stay twice as large as in a 960 px frame, which should help small objects.
 
-Results:
-[table from the notebook]
+| change | val mAP | AP_small | test-like mAP | public | private |
+|---|---|---|---|---|---|
+| baseline (RT-DETR final) | 0.282 | 0.137 | 0.300 | 0.2590 | 0.2558 |
+| masked ignore regions | 0.275 | 0.136 | 0.296 | **0.2693** | **0.2645** |
+| low-resolution simulation | 0.286 | 0.137 | 0.300 | 0.2661 | 0.2584 |
+| less mosaic (0.5) | 0.290 | 0.131 | 0.305 | 0.2624 | 0.2523 |
+| tile model | **0.310** | **0.154** | **0.325** | 0.2629 | 0.2509 |
+| baseline with tile inference only | 0.280 | 0.155 | 0.294 | – | – |
 
+- **Masked ignore regions** lowered val mAP, but gave the best public and private scores.
+- **Low-resolution simulation** keeps clean val unchanged and adds 0.012–0.017 mAP on degraded val frames; it also improved both leaderboard scores.
+- **Less mosaic** improved val in all 7 videos, but barely changed the public score and lowered the private one.
+- **The tile model** is the largest gain on val (+0.028, all 7 videos better), but alone it is worse on the leaderboard. Tile inference without tile training does not help, so the model must be trained on tiles.
+
+Val and the leaderboard disagree here, and the differences are small, so I kept all three data changes together for the long runs (4.2). The tile model is kept as a separate model for the ensembles (4.3), since its errors differ from the full-frame models.
 
 ### 4.2 Model changes
 
-> Source: `notebooks/final_pipeline/02_long_runs.ipynb`.
-> - Long runs at 960 and 1280 (`s2_960`, `s2_1280`): gain from more epochs / higher resolution compared to the budget-limited runs in section 3.
-> - Effect of model change kept separate from the data change in 4.1.
 
 ### 4.3 Ensembles and final selection
 
