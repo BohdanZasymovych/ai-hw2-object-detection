@@ -50,7 +50,7 @@ The dataset is unbalanced: car (46% of train), person (30%) and motor (9%) domin
 
 Resolutions range from 680x382 to 3840x2160. Most train images are medium-sized (53% are 1904x1071), val has more high-resolution ones (34% are 3840x2160), and test has none above 1920x1080 but 16% low-resolution ones (680x382, 960x540) that train and val lack.
 
-Most objects are small (54%) or medium (43%), measured as $\sqrt{w \cdot h}$ at a 1280 px long side with the COCO buckets (small < 32 px, large > 96 px). Person, bicycle and motor are mostly small, car, van, truck and tricycle mostly medium, and bus medium and large. The median object size per video varies from 18 to 58 px.
+Most objects are small (54%) or medium (43%), measured as $\sqrt{w \cdot h}$ at a 1280 px long side with the COCO buckets (small $< 32$ px, large $> 96$ px). Person, bicycle and motor are mostly small, car, van, truck and tricycle mostly medium, and bus medium and large. The median object size per video varies from 18 to 58 px.
 
 | % of boxes | small | medium | large |
 |---|---|---|---|
@@ -72,7 +72,7 @@ To choose the input size, I checked the share of objects below 16 px after resiz
 
 ### 1.6 Anchor sizes and shapes
 
-Anchor-based models (Faster R-CNN, RetinaNet) predict boxes relative to a few predefined anchor sizes and shapes. To find good sizes, I ran k-means (k = 3, 5, 9) on the box widths and heights at 1280 px:
+Anchor-based models (Faster R-CNN, RetinaNet) predict boxes relative to a few predefined anchor sizes and shapes. To find good sizes, I ran k-means ($k = 3, 5, 9$) on the box widths and heights at 1280 px:
 
 | k | mean best IoU | anchors (w x h, px) |
 |---|---|---|
@@ -80,11 +80,11 @@ Anchor-based models (Faster R-CNN, RetinaNet) predict boxes relative to a few pr
 | 5 | 0.66 | 13x18, 19x34, 32x23, 44x41, 92x66 |
 | 9 | 0.73 | 11x15, 13x28, 22x19, 20x39, 40x22, 30x31, 39x53, 63x34, 100x72 |
 
-These shapes only show the useful size range, about 13–100 px, far below the 32–512 px default. torchvision takes one anchor size per feature-pyramid level combined with fixed aspect ratios, so the training sizes come from a 1D k-means (k = 5, log scale) of $\sqrt{w \cdot h}$: 13/21/31/48/87 px for Faster R-CNN, and 13/26/52/104/208 px for RetinaNet (the smallest size, doubled per level like the stride). The aspect ratios stay at the default {0.5, 1, 2}, since they cover the box ratios h/w:
+These shapes only show the useful size range, about 13–100 px, far below the 32–512 px default. torchvision takes one anchor size per feature-pyramid level combined with fixed aspect ratios, so the training sizes come from a 1D k-means ($k = 5$, log scale) of $\sqrt{w \cdot h}$: 13/21/31/48/87 px for Faster R-CNN, and 13/26/52/104/208 px for RetinaNet (the smallest size, doubled per level like the stride). The aspect ratios stay at the default $\{0.5, 1, 2\}$, since they cover the box ratios $h/w$:
 
 | percentile | 10th | 50th | 90th |
 |---|---|---|---|
-| h / w | 0.47 | 1.06 | 2.25 |
+| $h/w$ | 0.47 | 1.06 | 2.25 |
 
 ### 1.7 Scene density
 
@@ -98,9 +98,9 @@ Most scenes are dense. The mean number of objects per frame varies from 5 to 143
 
 ### 1.8 Temporal redundancy
 
-The frame rate is high, so consecutive frames are near-duplicates: they add little to performance but slow down training. I measured the median IoU of the same object k frames apart:
+The frame rate is high, so consecutive frames are near-duplicates: they add little to performance but slow down training. I measured the median IoU of the same object $k$ frames apart:
 
-| frame gap k | 1 | 2 | **3** | 5 | 10 |
+| frame gap $k$ | 1 | 2 | **3** | 5 | 10 |
 |---|---|---|---|---|---|
 | median IoU of the same object | 0.90 | 0.81 | **0.73** | 0.60 | 0.36 |
 | % of objects with IoU > 0.5 | 96 | 86 | **75** | 59 | 39 |
@@ -114,7 +114,7 @@ I keep every 3rd frame (8,090 train / 951 val frames), a balance between trainin
 | frames | every 3rd frame of each video |
 | resize | long side 1280 px, aspect ratio kept |
 | normalisation | pixels scaled to [0, 1]; mean/std are applied inside each model |
-| training augmentation | horizontal flip (p = 0.5), scale jitter 0.75–1.25, colour jitter 0.2 (YOLO and RT-DETR: Ultralytics' built-in augmentation) |
+| training augmentation | horizontal flip ($p = 0.5$), scale jitter 0.75–1.25, colour jitter 0.2 (YOLO and RT-DETR: Ultralytics' built-in augmentation) |
 | val / test | resize only |
 | targets | 8 classes; ignore regions are not targets and stay in the evaluation ground truth as `iscrowd` |
 | reproducibility | seed 42 for python, numpy, torch and the data loaders |
@@ -143,7 +143,7 @@ Source: [02_two_stage.ipynb](notebooks/02_two_stage.ipynb)
 
 #### Setup
 
-Faster R-CNN with a ResNet-50 FPN backbone, pretrained on COCO, with a new 8-class head. SGD (momentum 0.9, weight decay 1e-4), lr 0.005 with ×0.1 after epoch 2, 3 epochs, batch 4, 1280 px; the best epoch is kept.
+Faster R-CNN with a ResNet-50 FPN backbone, pretrained on COCO, with a new 8-class head. SGD (momentum 0.9, weight decay 1e-4), lr 0.005 with $\times 0.1$ after epoch 2, 3 epochs, batch 4, 1280 px; the best epoch is kept.
 
 #### Baseline
 
@@ -174,10 +174,10 @@ The default anchors (32–512 px) are replaced by the k-means sizes 13/21/31/48/
 
 | box size | % of boxes | best IoU, default | best IoU, k-means |
 |---|---|---|---|
-| < 32 px | 53.9 | 0.48 | 0.77 |
+| $< 32$ px | 53.9 | 0.48 | 0.77 |
 | 32–96 px | 43.1 | 0.70 | 0.75 |
 | 96–150 px | 2.5 | 0.73 | 0.61 |
-| ≥ 150 px | 0.5 | 0.60 | 0.25 |
+| $\ge 150$ px | 0.5 | 0.60 | 0.25 |
 
 The fit improves for objects under 96 px (97% of boxes) but worsens for larger ones, which are bigger than the largest anchor. Despite the better fit, mAP decreased by 0.027. Two likely reasons:
 
@@ -203,16 +203,16 @@ The model had not converged: val mAP was still rising at epoch 3, so a longer sc
 - **RPN (first stage):** class-agnostic detection of objects. It scores anchors as object or background, roughly corrects their boxes and keeps the best candidates. Its recall is an upper bound for the whole model, since an object without a proposal cannot be detected.
 - **RoI head (second stage):** pools features for each proposal, classifies it into the 8 classes or background, refines the box a second time and removes duplicates with NMS. It turns 1000 proposals into about 59 confident boxes per image.
 
-| recall (IoU ≥ 0.5) | small | medium | large |
+| recall ($\text{IoU} \ge 0.5$) | small | medium | large |
 |---|---|---|---|
 | RPN, top 1000 proposals | 0.71 | 0.82 | 0.99 |
-| final detections (score ≥ 0.3) | 0.53 | 0.67 | 0.95 |
+| final detections ($\text{score} \ge 0.3$) | 0.53 | 0.67 | 0.95 |
 
 Small objects are limited by both stages: the RPN misses 29% of them, and the second stage loses another 18 points. More proposals do not help, since 2000 proposals give the same recall as 1000.
 
 #### Failure cases
 
-At score ≥ 0.3 and IoU 0.5:
+At $\text{score} \ge 0.3$ and $\text{IoU} \ge 0.5$:
 
 1. **Small and occluded objects are missed.** Only 46% of small objects are detected correctly (24% missed, 23% mislocalized), against 81% of large ones, and 61% of heavily occluded objects are missed. Small objects have few pixels and weak features, and occluded ones look like background.
 2. **Similar classes are confused.** Of the detected bicycles, 45% are classified as motors, possibly because motors are far more frequent in the dataset. Of the detected buses, 71% are classified as cars, a direct consequence of the imbalance and the very low number of buses.
@@ -236,52 +236,83 @@ Example frames, ground truth on top and predictions below:
 
 ### 3.2 One-stage anchor-based: RetinaNet
 
-[copy the train setup from the notebook with the same style as in 3.1]
+Source: [03_one_stage_anchor.ipynb](notebooks/03_one_stage_anchor.ipynb)
 
-[fill the baseline model with the same data as in the 3.1]
+#### Setup
 
-Experiments 1 - anchor sizes
+RetinaNet ResNet-50 FPN v2, pretrained on COCO, new 8-class layer. Levels P3–P7 (strides 8–128), 9 anchors per location, focal loss ($\alpha = 0.25$, $\gamma = 2$), GIoU box loss. SGD, lr 0.0025 with $\times 0.1$ after epoch 2, 3 epochs, batch 4, 1280 px. The baseline uses the torchvision defaults: anchor base sizes 32–512 px, IoU thresholds 0.5/0.4, NMS 0.5.
 
-For this model the experiment with the anchor size was also made. Here because of how RetinaNet built it was descided to use anchor sizes starting from 13 and then doubling the value untill 208, then on each level of the FPN the anchors are multiplied by the (1, 2^(1/3), 2^(2/3)) and we are getting 3 sizes of the anchor. 
+#### Experiment 1: anchor sizes
 
-IoU fit (described in the 3.1) showed here increase for all sizes of the objects but the metrics decreased as too (by [N] comparing with the baseline)
+The base sizes start from the smallest k-means size (13 px, [1.6](#16-anchor-sizes-and-shapes)) and double up to 208 px; each level multiplies its base by $(1, 2^{1/3}, 2^{2/3})$, so the levels cover 13–330 px without gaps. Doubling follows the stride, keeping the same anchor/stride ratio on every level, which the shared head needs.
 
-[place table with IOU fot from the notebook]
+| box size | % of boxes | best IoU, default | best IoU, data |
+|---|---|---|---|
+| $< 32$ px | 53.9 | 0.48 | 0.83 |
+| $\ge 32$ px | 46.1 | 0.83 | 0.82 |
 
-Experiment 2
+The fit improves strongly for small objects, but mAP decreased by 0.042:
 
-During training every anchor is labelled by its best IoU with a GT box: positive (learns the class and the box) if IoU ≥ the foreground threshold, background if IoU < the background threshold, ignored in between. Small boxes rarely reach IoU 0.5 with any anchor, so they get few positives. Lowering the thresholds to 0.4/0.3 gives them more positives
+- **Fewer positives:** at $1.6\times$ the stride (default $4\times$) anchors overlap less, so an image gets 189 positives instead of 628.
+- **Pretraining lost:** the COCO head was trained for anchors $4\times$ the stride, and 3 epochs were not enough to adapt it.
 
-For the lower thresholds the mAP decreased by [N] comparig with the baseline. Likelly it is because now more lose boxes gice more positives for the image, but this positives are not confident.
+#### Experiment 2: IoU thresholds
 
-Additionaly NMS was tuned, 0.5 and 0.6 were compared and the 0.5 gave slightly better results.
+An anchor is positive if its IoU with a GT box is $\ge$ the foreground threshold and background if it is below the background threshold. Small boxes rarely reach IoU 0.5, so lowering the thresholds from 0.5/0.4 to 0.4/0.3 gives them more positives (1,695 instead of 628 per image). mAP still decreased by 0.024, and even AP_small fell (0.058 → 0.048): the extra positives are loose boxes, so the model learns to score poorly placed boxes highly.
 
-The final model was [put name and parameters]
+NMS 0.6 at test time gave no gain over 0.5 (mAP 0.145 vs 0.146).
 
-[put results table with r cnn and experiments]
+#### Final model and comparison with Faster R-CNN
 
-[put train plot]
+No experiment beat the baseline, so it is the final model.
 
-What removing the proposal stage costs
+| model | mAP | AP50 | AP_small | AP_medium | AP_large | ms/img (T4) |
+|---|---|---|---|---|---|---|
+| Faster R-CNN, tuned | 0.176 | 0.366 | 0.079 | 0.166 | 0.347 | 76 |
+| **RetinaNet, baseline = final** | **0.146** | **0.289** | **0.058** | **0.135** | **0.289** | **57** |
+| data anchors | 0.104 | 0.246 | 0.046 | 0.095 | 0.227 | 56 |
+| IoU 0.4/0.3 | 0.122 | 0.243 | 0.048 | 0.108 | 0.248 | 57 |
 
-Without the proposal stage there is only one refinement of the boxes so the localization depends only one head. Because of this objects with sizes out of bounds of the sizes of the the anchors are classified poorelly, since the box for them is very rough because there is only one refinement of the anchor. On the other hand removing the first proposal stage makes inference and training faster since there are less computations
+![Val mAP per epoch and per training minute](images/retina_training.png)
 
-Faillures:
+RetinaNet is 0.030 mAP below Faster R-CNN but 25% faster. It matches it on person (AP 0.220 vs 0.219) and loses most on rare large vehicles (bus 0.020 vs 0.088, truck 0.116 vs 0.193). It plateaued after the learning-rate drop, while Faster R-CNN was still improving.
 
-The model has the same confussion issues as two-stage - bicicles and busses are classified wery poorelly.
+#### What removing the proposal stage costs
 
-[add confussion matrix]
+- **Foreground/background imbalance:** about 170k anchors per frame against about 46 objects, so easy background dominates the loss. Addressed by focal loss (down-weights easy anchors) and the prior bias init; Faster R-CNN instead samples 512 RoIs with up to 25% positives.
+- **Only one refinement:** class and box are predicted once from a fixed grid location. Addressed by IoU-based losses, quality-aware scores (centerness, GFL) or cascade refinement.
+- **Small objects depend only on the anchor assignment**, with no stride-4 level and no second chance:
 
-- First frame has issues with predicting small objects, a lot of them are missed
-- Scond frame has almost all bicicless missed and only human on it was classified
-- Third frame has a few same predictions for some objects
+| covered ($\text{IoU} \ge 0.5$, $\text{score} \ge 0.3$) | small | medium | large |
+|---|---|---|---|
+| Faster R-CNN | 0.53 | 0.67 | 0.95 |
+| RetinaNet | 0.33 | 0.56 | 0.89 |
 
-[add 3 images]
- 
+- **Faster inference:** no per-proposal computation (57 vs 76 ms/img).
 
-> - Experiments: anchor sizes grounded in the size statistics from section 1 (`retina_anchors`), IoU thresholds of anchor assignment (`retina_iou`), tuned (`retina_final`).
-> - Does removing the proposal stage cause issues: foreground/background imbalance, handled by focal loss; what you saw in practice.
-> - Comparison initial vs. tuned vs. tuned Faster R-CNN.
+#### Failure cases
+
+At $\text{score} \ge 0.3$ and $\text{IoU} \ge 0.5$:
+
+1. **Small and occluded objects are missed:** 28% of small objects are correct (48% missed; Faster R-CNN 46% correct), and 70% of heavily occluded ones are missed.
+2. **Similar classes are confused**, as in 3.1: 48% of detected bicycles become motors and 35% persons, all 49 detected buses become cars, and 58% of vans become cars.
+3. **Background false positives:** 20% of detections. Duplicates are rare (1.5%, Faster R-CNN 4.6%), since each location is predicted once.
+
+![Confusion matrix of the final model](images/retina_confusion.png)
+
+Example frames, ground truth on top and predictions below:
+
+![#193 of uav0000182_00000_v: missed small objects](images/retina_fail_missed_small.jpg)
+
+*Many small objects are missed.*
+
+![#88 of uav0000137_00458_v: bicycles missed](images/retina_fail_confused.jpg)
+
+*Almost all bicycles are missed; only the persons riding them are detected.*
+
+![#121 of uav0000339_00001_v: background false positives](images/retina_fail_background.jpg)
+
+*Many boxes on the background, and some objects covered by several boxes.*
 
 ### 3.3 One-stage anchor-free: YOLO11
 
