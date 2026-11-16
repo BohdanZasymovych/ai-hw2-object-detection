@@ -491,13 +491,19 @@ Val and the leaderboard disagree here, and the differences are small, so I kept 
 
 ### 4.2 Model changes
 
-From the training curves for the RT-DETR-L it was seen that they still improve when training ends. In this section i descided to give it enough epochs to train ([write number]) to see their real performance. Also i tried two input sizes of the images 960px and 1280px for both models.
+Source: [final_pipeline/02_long_runs.ipynb](notebooks/final_pipeline/02_long_runs.ipynb)
 
-[comparison table of 2 models and tunned rt detr l]
+The RT-DETR-L training curves were still rising when the 1.1 h budget ended (3.4). So I gave it 6 h per run to see its real performance, with the three data changes from 4.1. I also tried two training input sizes, 960 and 1280 px; each model is tested at a larger input than it was trained on, as in 3.4.
 
-[training curves]
+| model | epochs | val mAP | AP_small | AR | test-like mAP | public | private |
+|---|---|---|---|---|---|---|---|
+| RT-DETR final (3.4), 1.1 h | 4 | 0.282 | 0.137 | 0.492 | 0.300 | 0.2590 | 0.2558 |
+| 960 px, tested at 1280 px | 21 | 0.299 | **0.150** | 0.488 | **0.310** | – | – |
+| **1280 px, tested at 1440 px** | 13 | **0.306** | 0.149 | **0.500** | **0.310** | **0.3290** | **0.2763** |
 
-The best results were achived at epoch 7, then model performance started to decrease due to overfitting. both models showed better results than the baseline and the model with higher input resolution was better
+![Val mAP of the long runs](images/long_runs_training.png)
+
+Both models are better than the baseline, and the higher input resolution is better (+0.024 mAP, +0.070 public, +0.021 private). The best results were at epoch 7 in both runs; after that performance decreased because of overfitting, so most of the 6 h was not needed. The data changes were applied together, so their separate effects are not measured.
 
 ### 4.3 Ensembles and final selection
 
