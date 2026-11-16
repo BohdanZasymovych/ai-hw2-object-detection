@@ -530,13 +530,23 @@ Finally, I retrained the 1280 px, 960 px and YOLO11s models on train + val with 
 - **1280 + 960 + YOLO11s + tile (train only):** the best ensemble on val and on test-like val (0.337 / 0.347), the main criterion.
 - **1280 + 960 + YOLO11s (train only):** the best public score (0.3333) and the best on val among the ensembles without the tile model.
 
-### 4.4 Unsuccessful attempts
 
-> Short list of what did not work, with the numbers: e.g. NWD loss, low-resolution simulation, specific ensemble members, any bugs found (WBF fix). One line each: what, result, likely why.
+## 5. Summary of results
 
-## 5. Conclusions
+| section | model | val mAP | AP_small | public | private |
+|---|---|---|---|---|---|
+| 3.1 | Faster R-CNN, tuned | 0.176 | 0.079 | – | – |
+| 3.2 | RetinaNet, tuned | 0.146 | 0.058 | – | – |
+| 3.3 | YOLO11s, tuned | 0.207 | 0.102 | 0.2145 | 0.1757 |
+| 3.4 | RT-DETR-L, tuned (1.1 h) | 0.282 | 0.137 | 0.2590 | 0.2558 |
+| 4.1 | RT-DETR-L, tile model | 0.310 | 0.154 | 0.2629 | 0.2509 |
+| 4.2 | RT-DETR-L, long run, 1280 px | 0.306 | 0.149 | 0.3290 | 0.2763 |
+| 4.3 | **WBF: 1280 + 960 + YOLO11s + tile** | **0.337** | **0.174** | 0.3290 | **0.2871** |
 
-> 3–5 bullets: main lessons (resolution and small objects matter most, which family fits VisDrone best, what data/inference strategy gave the largest gain, what you would try next with more compute — e.g. temporal post-processing, SAHI).
+- **Small objects are the main difficulty.** Every gain came from handling them better: higher resolution, finer feature levels, tiles.
+- **The query-based RT-DETR was the best family** at every object size, with much higher recall, but it is larger and slower than YOLO11s.
+- **Changing the default anchors and assignment of the pretrained CNNs did not help** within 3 epochs; the pretrained settings were hard to beat.
+- **Longer training with the data changes gave the largest single-model gain** (+0.070 public), and the ensemble of models with different errors gave the best overall result.
 
 ## 6. Final model and run instructions
 
@@ -560,7 +570,3 @@ The competition data is downloaded on the first run of `01_data_analysis` (Kaggl
 **Reproducing the results without training.** Run a notebook locally with `RUN = set()`: all stages are downloaded from the Hugging Face repo and the tables, plots and failure cases are rebuilt from the saved metrics and predictions.
 
 > _TODO: add the exact sequence to regenerate the submitted CSV (which notebook, which `RUN` stages, expected runtime on Kaggle T4)._
-
-## References
-
-> Every paper/library you took ideas or code from (assignment requires citing): VisDrone, Faster R-CNN, FPN, RetinaNet, YOLO11/Ultralytics, TOOD, NWD, RT-DETR, DN-DETR, WBF, pycocotools/faster-coco-eval, SAHI if used.
