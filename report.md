@@ -8,7 +8,7 @@ date: 2026-11-16
 
 ## Summary
 
-The task is detecting 8 object classes in video frames, scored by COCO mAP. Most objects are small, and scenes are dense. I trained four detector families under the same protocol: a sequence-level train/val split and the same budget for each. The query-based RT-DETR beat the CNN detectors (YOLO11, Faster R-CNN, RetinaNet) at every object size, so it became the base of the final pipeline. Three changes gave the largest gains: a longer, higher-resolution RT-DETR run, tile-based training for small objects, and a WBF ensemble of models whose errors differ. The final submission is a WBF ensemble of two RT-DETR models at different input sizes and YOLO11s, retrained on train + val.
+The task is detecting 8 object classes in video frames, scored by COCO mAP. Most objects are small, and scenes are dense. I trained four detector families under the same protocol: a sequence-level train/val split and the same budget for each. The query-based RT-DETR beat the CNN detectors (YOLO11, Faster R-CNN, RetinaNet) at every object size, so it became the base of the final pipeline. Three changes gave the largest gains: a longer, higher-resolution RT-DETR run, tile-based training for small objects, and a WBF ensemble of models whose errors differ. The final submission is a WBF ensemble of two RT-DETR models at different input sizes, a tile-based RT-DETR and YOLO11s.
 
 ## 1. Data understanding and preprocessing
 
@@ -485,7 +485,7 @@ All tests start from the best RT-DETR training (backbone lr 1e-5, 960 px, 1.1 h)
 - **Masked ignore regions** lowered val mAP, but gave the best public and private scores.
 - **Low-resolution simulation** keeps clean val unchanged and adds 0.012–0.017 mAP on degraded val frames; it also improved both leaderboard scores.
 - **Less mosaic** improved val in all 7 videos, but barely changed the public score and lowered the private one.
-- **The tile model** is the largest gain on val (+0.028, all 7 videos better), but alone it is worse on the leaderboard. Tile inference without tile training does not help, so the model must be trained on tiles.
+- **The tile model** is the largest gain on val (+0.028, all 7 videos better), but alone it barely improved the public score (+0.004) and lowered the private one. Tile inference without tile training does not help, so the model must be trained on tiles.
 
 Val and the leaderboard disagree here, and the differences are small, so I kept all three data changes together for the long runs (4.2). The tile model is kept as a separate model for the ensembles (4.3), since its errors differ from the full-frame models.
 
@@ -548,25 +548,19 @@ Finally, I retrained the 1280 px, 960 px and YOLO11s models on train + val with 
 - **Changing the default anchors and assignment of the pretrained CNNs did not help** within 3 epochs; the pretrained settings were hard to beat.
 - **Longer training with the data changes gave the largest single-model gain** (+0.070 public), and the ensemble of models with different errors gave the best overall result.
 
-## 6. Final model and run instructions
+## 6. Run instructions
 
-> **Contains:** name the exact final model/ensemble and the submission file. Then how to reproduce. Draft from the template version below — update notebook names and add the final-pipeline steps.
+Install the dependencies with `pip install -r requirements.txt`. All randomness is seeded with `SEED = 42`.
 
-**Final model.** _TODO: ensemble name, members, input sizes, WBF parameters, submission file in `submissions/`._
+**Run flags.** By default the notebooks train and submit nothing: `RUN = set()`, `SUBMIT = False`. Every stage is then downloaded from the Hugging Face repo `BohdanZasymovych/ai-hw2-object-detection`, and all tables and plots are rebuilt from the saved metrics and predictions.
 
-**Code layout.** Shared code is in `utils/common.py` and `utils/ultra.py`; each step has its own notebook: `notebooks/01_data_analysis` … `05_query_based` for the required detectors and `notebooks/final_pipeline/01_data_tests`, `02_long_runs`, `03_final_models` for the final pipeline. Trained runs (metrics, predictions, checkpoints) are stored in the Hugging Face model repo `BohdanZasymovych/ai-hw2-object-detection` under `runs/<name>/`. All randomness is seeded with `SEED = 42`.
+**Training the final model from scratch** (on Kaggle):
 
-**Local setup.**
+First set `HF_REPO` in `utils/common.py` to your own Hugging Face repo and add an `HF_TOKEN` with write access; comparison cells that need untrained stages will fail, which does not affect the models.
 
-```bash
-python -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
+1. `04_one_stage_anchor_free`: `RUN = {"baseline", "final"}` (about 1.5 h).
+2. `final_pipeline/01_data_tests`: `RUN = {"tile"}` (about 1.5 h).
+3. `final_pipeline/02_long_runs`: `RUN = {"960", "1280"}` (6 h, both runs in parallel on T4 ×2).
+4. `final_pipeline/03_final_models`: `ENSEMBLES = ["1280 + 960 + YOLO11s + tile"]` predicts the test frames, applies WBF and writes the CSV; `SUBMIT = True` also submits it.
 
-The competition data is downloaded on the first run of `01_data_analysis` (Kaggle API token in `~/.kaggle/kaggle.json`). Tested with Python 3.14.4, torch 2.15.0, torchvision 0.29.2; minimum versions are in `requirements.txt` and are checked on import.
-
-**Kaggle.** Create a notebook, attach the competition data, enable a GPU and Internet, and add the secret `HF_TOKEN` (Hugging Face write token). The first cell of each notebook clones this repository and installs only the missing packages; Kaggle's preinstalled torch/torchvision are used. Set `RUN` to the stages to train in that session; finished stages are uploaded to the Hugging Face repo.
-
-**Reproducing the results without training.** Run a notebook locally with `RUN = set()`: all stages are downloaded from the Hugging Face repo and the tables, plots and failure cases are rebuilt from the saved metrics and predictions.
-
-> _TODO: add the exact sequence to regenerate the submitted CSV (which notebook, which `RUN` stages, expected runtime on Kaggle T4)._
+Finished stages are uploaded to the Hugging Face repo, so each notebook can run in a separate session. To regenerate only the submitted CSV without training, run step 4 alone: the members' test predictions are downloaded from the repo.
