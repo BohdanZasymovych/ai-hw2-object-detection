@@ -316,6 +316,47 @@ Example frames, ground truth on top and predictions below:
 
 ### 3.3 One-stage anchor-free: YOLO11
 
+[copy training setup from the notebook]
+
+[copy baseline results from the notebook]
+
+
+Experiment 1 p2 head
+
+From the data analysis it was found that there are a lot of small object and previous models struggled with them. So to handle this with YOLOv11 model i descided to add P2 head with stride 2 in addidition to the P3-P7 heads with strides 2^3 - 2^7. The feature map outputed from this head will have higher reoslution 640x640 and will preserve more details what is crucial for predicting small objects. But this increase training and inference time
+
+P2 head improved slightly AP_small (+0.014) but overall it performed worse: mAP decreased by 0.007. Likely it happend because to keep the same time budget for all models model was trained on only 5 epochs and training hasnt stoped. It may outperform baseline model with more epochs.
+
+
+Experiment 2 NWD loss
+
+IoU based losses are sensitive to small shifts for small objects (dataset has a lot of them). So I tried to chagne loss function from IoU to Normalized Wasserstein Distance (NWD). models each box as a 2D Gaussian and compares them with the Wasserstein distance, $\text{NWD} = \exp(-W_2 / C)$: it depends on the absolute pixel offset, not on the box size, and stays informative without overlap. $C = 32$ px is the median box size at 1280 px. The box loss becomes $0.5\,(1 - \text{CIoU}) + 0.5\,(1 - \text{NWD})$, keeping CIoU's scale invariance for larger boxes; the assigner still uses CIoU.
+
+It slightly decreased the mAP, by 0.09.
+
+Final tuning: additionally the best model (baseline) was tuned by grid searc hby searching different input resoltions and  NMS IoU thresholds. 
+
+The best results was for the default image size 1280 model was trained on and for NMS 0.6.
+
+[add table with comparison of previous models and experiments here]
+
+[add trainning curves]
+
+Failure cases:
+- Same issue with the bycicle and bus
+
+[add confussion matrix]
+
+[add 3 images]
+
+- 1: model missed a lot of small and far objects on the picture
+- 2: missed distant cars, perplexed bycicles and motors
+- 3: Here the model performed quite well but the GT was bad, most motors doesnt have person labeled on them but model correctly classified people; there are some boxes in the GT on the background
+
+How locations are assigned without anchors.
+
+YOLO v11 ppredicts one box per each feature cell in the feature map. Prediction contains size of the box with center in the current cell and confidence for each class. Then the boxes are filterd: ones with confidences for every class lower than some threshold are dropped, then NMS is used and then only top k boxes with largest confidences are used, the class for each box is choosen as one that has the highest confidence
+
 > - How locations are assigned without anchors (task-aligned assigner), effect on small/dense objects.
 > - Experiments: P2 high-resolution head (`yolo_p2`), NWD box loss (`yolo_loss`), tuned test-time resolution × NMS IoU (`yolo_final`). State the search range and the selected values.
 > - Comparison with tuned anchor-based models broken down by object size (AP_s/AP_m/AP_l). First public LB score.
