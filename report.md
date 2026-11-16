@@ -141,59 +141,98 @@ I keep every 3rd frame (8,090 train / 951 val frames), a balance between trainin
 
 Source: [02_two_stage.ipynb](notebooks/02_two_stage.ipynb)
 
-Faster R-CNN with ResNet50 FPN backbone with pretrained weights on the COCO dataset.
+#### Setup
 
-Baseline model with default hyperparameters got next results:
+Faster R-CNN with a ResNet-50 FPN backbone, pretrained on COCO, with a new 8-class head. SGD (momentum 0.9, weight decay 1e-4), lr 0.005 with ×0.1 after epoch 2, 3 epochs, batch 4, 1280 px; the best epoch is kept.
 
-[add table with the results]
+#### Baseline
 
-For the first experiment i descided to tune hyperparameters:
+With the torchvision defaults (anchors 32–512 px, 1000 proposals, NMS IoU 0.5):
 
-- RPN proposals - number of the regions which possibly contain object the Region Proposal Network proposes. (300, 1000, 2000)
-- NMS IoU - the Non-Maximum suppression is the mechanism which keeps model from giving a few boxes for the same object. It is applied after the second stage and if boxes for the two predictions of the same class have IoU more than threshold only the more confident is left. (0.4, 0.5, 0.6)
+| mAP | AP50 | AP_small | AP_large | ms/img (T4) |
+|---|---|---|---|---|
+| 0.176 | 0.369 | 0.079 | 0.348 | 76 |
 
-The frid was almost flat, all changes of the mAP was within 0.005, which can possibly be just noice. The best configuration was 1000 proposals and NMS 0.6.
+#### Experiment 1: RPN proposals × NMS IoU
 
-[add table with the results keep only mAP, no time and small mAP]
+Both are test-time settings, so no retraining is needed:
 
-For this change no retraining was needed since weights keeps unchanged.
+- **RPN proposals:** the number of top-scoring candidate regions the Region Proposal Network passes to the second stage (300, 1000, 2000).
+- **NMS IoU:** non-maximum suppression keeps the model from giving several boxes for one object. It is applied after the second stage: if two predictions of the same class overlap with IoU above the threshold, only the more confident one is kept (0.4, 0.5, 0.6).
 
-For the second experiment i descided to tune anchor box sizes:
+| mAP | NMS 0.4 | NMS 0.5 | NMS 0.6 |
+|---|---|---|---|
+| 300 proposals | 0.172 | 0.172 | 0.172 |
+| 1000 proposals | 0.175 | 0.176 | **0.176** |
+| 2000 proposals | 0.175 | 0.174 | 0.171 |
 
-[put here sizes and spect ratios, add link to the section 1.6]
+The grid is almost flat: all mAP changes are within 0.005, which is likely noise. The best configuration is 1000 proposals and NMS 0.6.
 
-To check how good this boxes fir I matched each box in the frame with all this and the default sizes (32-512) for reference and check find IoU between GT box and each new box. I kept only the best fit IoU. The IoU increased for the objects with size <96px (97% of the objects) but for larger it decreased since they bigger than the proposed anchors.
+#### Experiment 2: anchor sizes
 
-[add table form the 6 - anchor sizes]
+The default anchors (32–512 px) are replaced by the k-means sizes 13/21/31/48/87 px, one per FPN level, with the same aspect ratios 0.5, 1, 2 (see [1.6](#16-anchor-sizes-and-shapes)). To check how well they fit, I matched each train box with every anchor shape and kept the best IoU:
 
-Despite the IoU fit better the results was much worse - mAP decreased by 0.27 compared with the baseline. 
+| box size | % of boxes | best IoU, default | best IoU, k-means |
+|---|---|---|---|
+| < 32 px | 53.9 | 0.48 | 0.77 |
+| 32–96 px | 43.1 | 0.70 | 0.75 |
+| 96–150 px | 2.5 | 0.73 | 0.61 |
+| ≥ 150 px | 0.5 | 0.60 | 0.25 |
 
-Possible reason may be that the number of epochs was to low for the network to addapt its weights to new anchor boxes since the pretrained backbone used default sizes.
+The fit improves for objects under 96 px (97% of boxes) but worsens for larger ones, which are bigger than the largest anchor. Despite the better fit, mAP decreased by 0.027. Two likely reasons:
 
-The final model from this stage is model with default anchors and 1000 proposals, 0.6 NMS IoU threshold.
+- **Large objects lost their anchors:** AP_large fell from 0.348 to 0.277, while AP_small did not change.
+- **Pretraining was lost:** the COCO-pretrained RPN head was trained for the default sizes, and 3 epochs were not enough to adapt it to the new anchors.
 
-[add full comparison table]
+#### Final model
 
-[add train epoch plot]
+Default anchors, 1000 proposals and NMS 0.6:
 
-What each stage contributes:
+| model | mAP | AP50 | AP_small | AP_medium | AP_large | ms/img (T4) |
+|---|---|---|---|---|---|---|
+| baseline (NMS 0.5) | 0.176 | 0.369 | 0.079 | 0.166 | 0.348 | 76 |
+| **final (NMS 0.6)** | **0.176** | **0.366** | **0.079** | **0.166** | **0.347** | **76** |
+| k-means anchors | 0.149 | 0.334 | 0.081 | 0.152 | 0.277 | 76 |
 
-- RPN (first stage) - class-agnostic detection of the objects. It proposes a lot of candidate boxes oand only the best are left. Each candidate box here has an anchor size and rough correction to it. Its recall is an upper bound for the whole model since the object without the proposal cannot be detected.
-- RoI head (second stage): pools features for each proposals, classifies into 8 classes or background, refines the box second time, removes dublicates with NMS.
+![Val mAP per epoch and per training minute](images/frcnn_training.png)
 
+The model had not converged: val mAP was still rising at epoch 3, so a longer schedule is the most likely gain.
 
-Failure cases:
+#### What each stage contributes
 
-- For the model it is hard to classify small bicicles, it perplexed them in 45% of the casses with motors, possibly because the motors had much higher presence in the dataset than bicycle
-- Almost all busses are classified incorrectly - 71% of them classified as car. It is direct consequence of unbalansness and very low presens of the buses in the dataset
+- **RPN (first stage):** class-agnostic detection of objects. It scores anchors as object or background, roughly corrects their boxes and keeps the best candidates. Its recall is an upper bound for the whole model, since an object without a proposal cannot be detected.
+- **RoI head (second stage):** pools features for each proposal, classifies it into the 8 classes or background, refines the box a second time and removes duplicates with NMS. It turns 1000 proposals into about 59 confident boxes per image.
 
-[add confussion matrix]
+| recall (IoU ≥ 0.5) | small | medium | large |
+|---|---|---|---|
+| RPN, top 1000 proposals | 0.71 | 0.82 | 0.99 |
+| final detections (score ≥ 0.3) | 0.53 | 0.67 | 0.95 |
 
-- First failure case frame is (the frame mentioned in the 1.3) had labels not for all cars on the parking and model correctly classified them but the score was lowed because GT didnt have them labeld. Also some small objects are misclassified or missed
-- On the second frame there are a lot of biciclesclassified as motors
-- Third frame has the same issues as the first and addtionaly it classified trafic light as the van, some other objects are missclassified or missed too.
+Small objects are limited by both stages: the RPN misses 29% of them, and the second stage loses another 18 points. More proposals do not help, since 2000 proposals give the same recall as 1000.
 
-[3 frames from the notebook with conparison of GT and predictions]
+#### Failure cases
+
+At score ≥ 0.3 and IoU 0.5:
+
+1. **Small and occluded objects are missed.** Only 46% of small objects are detected correctly (24% missed, 23% mislocalized), against 81% of large ones, and 61% of heavily occluded objects are missed. Small objects have few pixels and weak features, and occluded ones look like background.
+2. **Similar classes are confused.** Of the detected bicycles, 45% are classified as motors, possibly because motors are far more frequent in the dataset. Of the detected buses, 71% are classified as cars, a direct consequence of the imbalance and the very low number of buses.
+3. **Missing labels and background false positives.** A third of the detections are on background; part of them are real objects without a label.
+
+![Confusion matrix of the final model](images/frcnn_confusion.png)
+
+Example frames, ground truth on top and predictions below:
+
+![#127 of uav0000182_00000_v: missed small objects and unlabeled parked cars](images/frcnn_fail_missed_small.jpg)
+
+*The frame from [1.3](#13-label-quality): not all parked cars are labeled, and the model detects them correctly, but its score is lowered because the GT does not have them. Some small objects are also misclassified or missed.*
+
+![#190 of uav0000137_00458_v: bicycles classified as motors](images/frcnn_fail_confused.jpg)
+
+*Many bicycles are classified as motors.*
+
+![#211 of uav0000182_00000_v: background false positives](images/frcnn_fail_background.jpg)
+
+*The same issues as in the first frame; in addition, a traffic light is classified as a van, and some other objects are misclassified or missed.*
 
 ### 3.2 One-stage anchor-based: RetinaNet
 
