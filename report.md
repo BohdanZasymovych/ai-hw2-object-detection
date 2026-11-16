@@ -5,11 +5,6 @@ course: Artificial Intelligence · UCU
 date: 2026-11-16
 ---
 
-
-## Summary
-
-The task is detecting 8 object classes in video frames, scored by COCO mAP. Most objects are small, and scenes are dense. I trained four detector families under the same protocol: a sequence-level train/val split and the same budget for each. The query-based RT-DETR beat the CNN detectors (YOLO11, Faster R-CNN, RetinaNet) at every object size, so it became the base of the final pipeline. Three changes gave the largest gains: a longer, higher-resolution RT-DETR run, tile-based training for small objects, and a WBF ensemble of models whose errors differ. The final submission is a WBF ensemble of two RT-DETR models at different input sizes, a tile-based RT-DETR and YOLO11s.
-
 ## 1. Data understanding and preprocessing
 
 Source: [01_data_analysis.ipynb](notebooks/01_data_analysis.ipynb)
